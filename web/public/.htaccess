@@ -13,3 +13,17 @@ AddType application/vnd.pmtiles .pmtiles
     Header set Access-Control-Allow-Origin "*"
   </FilesMatch>
 </IfModule>
+
+# o2switch (Apache) : les fichiers existants (tuiles, démo, statiques) sont servis tels quels ;
+# tout le reste passe par index.php (API JSON /v1/...). /tuiles/ n'est jamais envoyé vers PHP.
+DirectoryIndex index.php
+RewriteEngine On
+
+RewriteRule ^tuiles(/|$) - [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [L]
+
+# Apache/FastCGI retire parfois les en-têtes personnalisés : on transmet X-Api-Key à PHP
+RewriteCond %{HTTP:X-Api-Key} .
+RewriteRule .* - [E=HTTP_X_API_KEY:%{HTTP:X-Api-Key}]

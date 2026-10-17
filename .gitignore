@@ -3,3 +3,5 @@ web/storage/*
 *.pbf
 *.pmtiles
 .env
+web/vendor/
+web/.phpunit.result.cache
