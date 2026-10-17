@@ -11,6 +11,8 @@ Dépôt séparé de `runeride` (baseline : comptes, trajets). Les outils OSM et 
 5. **Brancher RuneRide** : `FOND_DE_CARTE` et les routes de ravitaillement de la baseline pointent vers cette API.
 6. **Plus tard, hors mutualisé (AWS)** : adresses complètes, itinéraires.
 
+- **CORS** : fait (`Cors.php`, `CARTO_CORS_ORIGINS`, tests) ; le serveur de production doit encore recevoir la variable et les fichiers.
+
 ## À confirmer
 
 - Version de MariaDB réelle chez o2switch (testé en local : 10.6 et 11.8), `max_allowed_packet`, quotas disque/IO.

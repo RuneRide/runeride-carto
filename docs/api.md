@@ -80,3 +80,11 @@ cd web && CARTO_TEST_DSN='mysql:host=127.0.0.1;port=3307;dbname=runeride_osm;cha
 ```
 
 Sans `CARTO_TEST_DSN`, les tests d'intégration sont ignorés ; sans `CARTO_TEST_ADMIN_HOST`, seul le test d'import est ignoré. Tests Python (règles, écrémage, échappement) : `python3 -m unittest discover -s bin -p 'test_*.py'`.
+
+## CORS (appels depuis un navigateur)
+
+Variable `CARTO_CORS_ORIGINS` : liste d'origines autorisées, séparées par des virgules, **sans joker** (`*` est ignoré). Exemple : `https://app.runeride.fr`. Vide : aucun en-tête CORS.
+
+- Une origine listée reçoit `Access-Control-Allow-Origin` (valeur exacte, jamais `*`) et `Vary: Origin`, y compris sur les erreurs (401...) pour que le navigateur les lise.
+- Le preflight `OPTIONS` n'exige pas de clé : `204` avec `Access-Control-Allow-Methods: GET, OPTIONS` et `Access-Control-Allow-Headers: X-Api-Key, Content-Type` pour une origine autorisée, `403` sinon.
+- **Limite importante :** une clé d'API placée dans le code JavaScript d'une page n'est pas secrète. Le CORS empêche seulement un autre site web d'appeler l'API depuis le navigateur d'un visiteur ; il ne protège pas contre un client quelconque (curl, script). Si l'API doit rester privée, la baseline PHP doit relayer les appels côté serveur en ajoutant la clé.

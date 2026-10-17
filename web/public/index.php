@@ -4,7 +4,7 @@ declare(strict_types=1);
 require __DIR__ . '/../vendor/autoload.php';
 
 use Carto\{Api, Config, Database, Router};
-use Carto\Http\ApiKeyGuard;
+use Carto\Http\{ApiKeyGuard, Cors};
 
 $config = Config::load(__DIR__ . '/../.env');
 $query = $_GET;
@@ -13,6 +13,18 @@ $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
+
+// CORS d'abord : le navigateur doit voir aussi les erreurs (401...), et le preflight OPTIONS ne porte pas de clé.
+$cors = new Cors($config->get('CARTO_CORS_ORIGINS', ''));
+$origine = $_SERVER['HTTP_ORIGIN'] ?? null;
+foreach ($cors->entetes($origine, $method === 'OPTIONS') as $nom => $valeur) {
+    header("$nom: $valeur", $nom !== 'Vary');
+}
+if ($method === 'OPTIONS') {
+    http_response_code($cors->autorise($origine) ? 204 : 403);
+    header('Cache-Control: no-store');
+    exit;
+}
 
 $guard = new ApiKeyGuard($config->get('CARTO_API_KEY', ''));
 if (!$guard->autorise($_SERVER['HTTP_X_API_KEY'] ?? null)) {
@@ -40,6 +52,6 @@ $ttl = (int) $config->get('CARTO_CACHE_SECONDS', '300');
 $cacheable = $status === 200 && $path !== '/v1/sante' && $ttl > 0 && $path !== '/';
 header('Cache-Control: ' . ($cacheable ? "public, max-age=$ttl" : 'no-store'));
 if ($cacheable && ($_SERVER['HTTP_X_API_KEY'] ?? '') !== '') {
-    header('Vary: X-Api-Key');
+    header('Vary: X-Api-Key', false);
 }
 echo json_encode($out, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
