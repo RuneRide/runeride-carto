@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RuneRide - démo tuiles vectorielles</title>
+<meta name="color-scheme" content="light dark">
+<!-- PoC : fond de carte PMTiles (Protomaps / données OSM) rendu par MapLibre GL JS.
+     Non utilisé par l'application. Voir docs/tuiles.md. -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css"
+      integrity="sha384-uTttxo/aOKbdE5RlD/SPzSDoDmNvGlUYPjONi2MN/b7c9HPSvW07OIuyP7uL6jxK" crossorigin="anonymous">
+<style>
+  html, body { height: 100%; margin: 0; }
+  #carte { position: absolute; inset: 0; }
+  #info { position: absolute; left: 8px; bottom: 28px; z-index: 2; font: 12px system-ui, sans-serif;
+          background: rgba(255,255,255,.85); color: #222; padding: 4px 8px; border-radius: 4px; }
+  @media (prefers-color-scheme: dark) { body { background: #111; } #info { background: rgba(20,20,20,.85); color: #ddd; } }
+</style>
+</head>
+<body>
+<div id="carte"></div>
+<div id="info">Démo tuiles PMTiles</div>
+<script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"
+        integrity="sha384-5+cfbwT0iiub6VsQAdn6yz16nr6sDiQoHx6tm4O8OVYXHYOxcffFmCJBL0dgdvGp" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/pmtiles@4.5.0/dist/pmtiles.js"
+        integrity="sha384-pbKNZbDshUsLnZMIVsn/t+j3xEY9PGfuX5Z22l5rcy/obXz3EwaMx1F5d9sRsJMn" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@protomaps/basemaps@5.7.2/dist/basemaps.js"
+        integrity="sha384-fzuU7k7ZWwfZAe1+3h7plrSA6dNazJaM2NsKVwcrReJLK0gwVwyOSyPwROl9m1M0" crossorigin="anonymous"></script>
+<script>
+(function () {
+  // Fichier PMTiles : ?src=... (absolu ou relatif), sinon /tuiles/toulouse.pmtiles
+  var params = new URLSearchParams(location.search);
+  var src = new URL(params.get('src') || '/tuiles/toulouse.pmtiles', location.href).href;
+  var sombre = params.has('theme') ? params.get('theme') === 'dark'
+                                   : matchMedia('(prefers-color-scheme: dark)').matches;
+  var flavor = sombre ? 'dark' : 'light';
+
+  var protocole = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', protocole.tile);
+
+  var map = new maplibregl.Map({
+    container: 'carte',
+    center: [1.4442, 43.6047], zoom: 9,
+    hash: true,
+    style: {
+      version: 8,
+      glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+      sprite: 'https://protomaps.github.io/basemaps-assets/sprites/v4/' + flavor,
+      sources: { protomaps: {
+        type: 'vector', url: 'pmtiles://' + src,
+        attribution: '<a href="https://protomaps.com">Protomaps</a> © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'
+      } },
+      layers: basemaps.layers('protomaps', basemaps.namedFlavor(flavor), { lang: 'fr' })
+    }
+  });
+  map.addControl(new maplibregl.NavigationControl(), 'top-right');
+  map.on('error', function (e) { document.getElementById('info').textContent = 'Erreur : ' + (e.error && e.error.message); });
+  map.on('idle', function () { document.getElementById('info').textContent = 'Carte chargée (' + flavor + ')'; document.title += ' [ok]'; });
+  window.__map = map;
+
+  // Suit le thème système (recharge simple : le style change de sprite et de flavor)
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function () {
+    if (!params.has('theme')) location.reload();
+  });
+})();
+</script>
+</body>
+</html>

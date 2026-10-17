@@ -1,0 +1,15 @@
+# Tuiles vectorielles PMTiles (PoC, voir docs/tuiles.md) - NON TESTE sur le vrai Apache d'o2switch.
+# Le navigateur lit le fichier par requêtes HTTP Range : il doit être servi tel quel (pas de
+# compression, les tuiles sont déjà compressées en interne) avec Accept-Ranges (défaut d'Apache
+AddType application/vnd.pmtiles .pmtiles
+
+<IfModule mod_deflate.c>
+  SetEnvIfNoCase Request_URI "\.pmtiles$" no-gzip dont-vary
+</IfModule>
+
+<IfModule mod_headers.c>
+  <FilesMatch "\.pmtiles$">
+    Header set Cache-Control "public, max-age=3600"
+    Header set Access-Control-Allow-Origin "*"
+  </FilesMatch>
+</IfModule>

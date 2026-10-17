@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""Extrait d'un fichier .osm.pbf les stations-service, les localités et le
+décompte des adresses, et produit un dump SQL (MariaDB) chargeable en ligne
+de commande.  Traitement 100 % local : rien n'est à exécuter sur l'hébergeur.
+
+Usage : osm-extraire FICHIER.osm.pbf DOSSIER_SORTIE
+Dépendance : pyosmium (pip install osmium), Python >= 3.9.
+Sortie : DOSSIER_SORTIE/osm_dump.sql (+ stats.json).  Schéma : docs/osm/osm_schema.sql
+
+Données © contributeurs OpenStreetMap, licence ODbL (voir docs/osm.md).
+Aucun identifiant n'est lu ni écrit par ce script.
+"""
+import json
+import os
+import sys
+import time
+
+import osmium
+
+LOT = 500  # lignes par INSERT
+PLACES = {"city", "town", "village", "hamlet", "suburb", "quarter", "neighbourhood"}
+
+
+def sql(v):
+    if v is None:
+        return "NULL"
+    if isinstance(v, (int, float)):
+        return repr(v)
+    v = v.replace("\\", "\\\\").replace("'", "''").replace("\0", "")
+    return "'" + v + "'"
+
+
+def centre(obj, kind):
+    if kind == "n":
+        return obj.lat, obj.lon
+    la = lo = n = 0
+    for nd in obj.nodes:
+        if nd.location.valid():
+            la += nd.location.lat
+            lo += nd.location.lon
+            n += 1
+    return (la / n, lo / n) if n else (None, None)
+
+
+def entier(v):
+    try:
+        return int(str(v).replace(" ", "").split(";")[0])
+    except ValueError:
+        return None
+
+
+class Sortie:
+    def __init__(self, f, table, cols):
+        self.f, self.table, self.cols, self.buf, self.n = f, table, cols, [], 0
+
+    def ajouter(self, row):
+        self.buf.append("(" + ",".join(sql(v) for v in row) + ",ST_GeomFromText(%s,4326))"
+                        % sql("POINT(%r %r)" % (row[-1], row[-2])))
+        self.n += 1
+        if len(self.buf) >= LOT:
+            self.vider()
+
+    def vider(self):
+        if self.buf:
+            self.f.write("INSERT INTO %s (%s,geom) VALUES\n%s;\n"
+                         % (self.table, ",".join(self.cols), ",\n".join(self.buf)))
+            self.buf = []
+
+
+def main():
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    pbf, sortie = sys.argv[1:]
+    os.makedirs(sortie, exist_ok=True)
+    t0 = time.time()
+    st = {"pbf": os.path.basename(pbf), "pbf_octets": os.path.getsize(pbf),
+          "adresses_noeuds": 0, "adresses_chemins": 0}
+    f = open(os.path.join(sortie, "osm_dump.sql"), "w", encoding="utf-8")
+    f.write("-- Données © contributeurs OpenStreetMap (ODbL) — généré par osm-extraire\n"
+            "SET NAMES utf8mb4;\nSET autocommit=0;\nSET unique_checks=0;\nSET foreign_key_checks=0;\n"
+            "TRUNCATE osm_stations;\nTRUNCATE osm_lieux;\n")
+    stations = Sortie(f, "osm_stations", [
+        "osm_type", "osm_id", "nom", "marque", "exploitant", "carburants",
+        "adr_numero", "adr_rue", "adr_cp", "adr_ville", "lat", "lon"])
+    lieux = Sortie(f, "osm_lieux", [
+        "osm_type", "osm_id", "categorie", "nom", "nom_alt", "population", "lat", "lon"])
+
+    fp = osmium.FileProcessor(pbf, osmium.osm.NODE | osmium.osm.WAY) \
+        .with_locations() \
+        .with_filter(osmium.filter.KeyFilter("amenity", "place", "addr:housenumber"))
+    for o in fp:
+        kind = "n" if o.is_node() else "w"
+        t = o.tags
+        if "addr:housenumber" in t and "addr:street" in t:
+            st["adresses_noeuds" if kind == "n" else "adresses_chemins"] += 1
+        if t.get("amenity") == "fuel":
+            la, lo = centre(o, kind)
+            if la is None:
+                continue
+            carb = ",".join(sorted(k[5:] for k, v in ((x.k, x.v) for x in t)
+                                   if k.startswith("fuel:") and v == "yes")) or None
+            stations.ajouter([kind, o.id, t.get("name"), t.get("brand"), t.get("operator"), carb,
+                              t.get("addr:housenumber"), t.get("addr:street"),
+                              t.get("addr:postcode"), t.get("addr:city"), la, lo])
+        elif t.get("place") in PLACES and "name" in t and kind == "n":
+            lieux.ajouter([kind, o.id, t["place"], t["name"],
+                           t.get("alt_name") or t.get("old_name"),
+                           entier(t["population"]) if "population" in t else None,
+                           o.lat, o.lon])
+    for s in (stations, lieux):
+        s.vider()
+    f.write("COMMIT;\n")
+    f.close()
+    st.update(stations=stations.n, lieux=lieux.n,
+              duree_filtrage_s=round(time.time() - t0, 1))
+    json.dump(st, open(os.path.join(sortie, "stats.json"), "w"), indent=2)
+    print(json.dumps(st, indent=2))
+
+
+main()
