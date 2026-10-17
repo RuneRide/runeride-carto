@@ -5,18 +5,18 @@ namespace Carto;
 
 use Carto\Http\{ApiException, Validation};
 use Carto\Repository\{LieuRepository, StationRepository};
-use PDO;
+use Doctrine\DBAL\Connection;
 
 /** Routes /v1 : transforme requêtes validées + dépôts en réponses JSON. */
 final class Api
 {
     public const ATTRIBUTION = "© les contributeurs d'OpenStreetMap (ODbL) https://www.openstreetmap.org/copyright";
 
-    /** @param callable():PDO $pdo connexion paresseuse : /v1/sante ne touche pas la base inutilement */
+    /** @param callable():Connection $pdo connexion paresseuse : /v1/sante ne touche pas la base inutilement */
     public static function register(Router $router, callable $pdo, string $env, array &$query): void
     {
         $router->add('GET', '/v1/sante', function () use ($pdo, $env) {
-            $pdo()->query('SELECT 1')->fetchColumn();
+            $pdo()->executeQuery('SELECT 1')->fetchOne();
             return ['statut' => 'ok', 'env' => $env, 'version' => 'v1'];
         });
 

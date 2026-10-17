@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Carto\Tests\Integration;
 
 use Carto\{Api, Config, Database, Router};
+use Doctrine\DBAL\Connection;
 use PDO;
 use PHPUnit\Framework\TestCase;
 
@@ -19,7 +20,8 @@ final class ImportSurTest extends TestCase
 {
     private const BASE = 'carto_test_import';
     private static string $dossier = '';
-    private static ?PDO $pdo = null;
+    private static ?Connection $conn = null;
+    private static ?PDO $pdo = null; // même connexion, API PDO native pour les vérifications directes
     /** @var array<string,array<string,array<string,mixed>>> */
     private static array $attendu = [];
 
@@ -51,10 +53,11 @@ final class ImportSurTest extends TestCase
         $sortie = self::sh($cli, self::$dossier, $env, self::$dossier . '/charger.sql');
         self::assertSame('', trim($sortie), 'SHOW WARNINGS doit être vide : ' . $sortie);
 
-        self::$pdo = Database::connect(new Config([
+        self::$conn = Database::connect(new Config([
             'CARTO_DB_DSN' => "mysql:host=$host;port=$port;dbname=" . self::BASE . ';charset=utf8mb4',
             'CARTO_DB_USER' => $user, 'CARTO_DB_PASSWORD' => $pass,
         ]));
+        self::$pdo = self::$conn->getNativeConnection();
     }
 
     public static function tearDownAfterClass(): void
@@ -62,6 +65,7 @@ final class ImportSurTest extends TestCase
         if (self::$pdo !== null) {
             self::$pdo->exec('DROP DATABASE IF EXISTS ' . self::BASE);
             self::$pdo = null;
+            self::$conn = null;
         }
         if (self::$dossier !== '' && is_dir(self::$dossier)) {
             foreach (glob(self::$dossier . '/*') ?: [] as $f) {
@@ -139,7 +143,7 @@ final class ImportSurTest extends TestCase
     {
         $query = [];
         $router = new Router();
-        Api::register($router, fn () => self::$pdo, 'test', $query);
+        Api::register($router, fn () => self::$conn, 'test', $query);
         $get = function (array $q) use ($router, &$query): array {
             $query = $q;
             return $router->dispatch('GET', '/v1/lieux');

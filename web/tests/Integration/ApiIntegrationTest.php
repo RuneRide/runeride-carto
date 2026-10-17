@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Carto\Tests\Integration;
 
 use Carto\{Api, Config, Database, Router};
+use Doctrine\DBAL\Connection;
 use PDO;
 use PHPUnit\Framework\TestCase;
 
@@ -15,7 +16,8 @@ final class ApiIntegrationTest extends TestCase
 {
     /** @var array<string,mixed> */
     private array $query = [];
-    private PDO $pdo;
+    private Connection $conn;
+    private PDO $pdo; // même connexion, API PDO native pour les vérifications directes
 
     protected function setUp(): void
     {
@@ -23,9 +25,10 @@ final class ApiIntegrationTest extends TestCase
         if (!$dsn) {
             $this->markTestSkipped('CARTO_TEST_DSN absent');
         }
-        $this->pdo = Database::connect(new Config([
+        $this->conn = Database::connect(new Config([
             'CARTO_DB_DSN' => $dsn, 'CARTO_DB_USER' => (string) getenv('CARTO_TEST_USER'), 'CARTO_DB_PASSWORD' => (string) getenv('CARTO_TEST_PASSWORD'),
         ]));
+        $this->pdo = $this->conn->getNativeConnection();
     }
 
     /** @param array<string,string> $q @return array{0:int,1:array<string,mixed>} */
@@ -34,7 +37,7 @@ final class ApiIntegrationTest extends TestCase
         $this->query = $q;
         // $this->query est passé par référence à Api::register : on réutilise le même tableau
         $router = new Router();
-        Api::register($router, fn () => $this->pdo, 'test', $this->query);
+        Api::register($router, fn () => $this->conn, 'test', $this->query);
         return $router->dispatch('GET', $path);
     }
 

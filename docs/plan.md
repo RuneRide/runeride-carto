@@ -6,7 +6,7 @@ Dépôt séparé de `runeride` (baseline : comptes, trajets). Les outils OSM et 
 
 1. **Socle PHP** (fait, `web/`) : même structure que `runeride/web` (Config, Database, Router, migrations par pilote), base MariaDB distincte de celle des comptes.
 2. **Import OSM** : `bin/osm-extraire` (fait, voir `docs/osm.md`) : TSV échappés + `LOAD DATA LOCAL INFILE`, `min_zoom` par point avec écrémage par grille, comparaison mesurée index spatial / index `min_zoom` / clé de cellule (clé de cellule écartée).
-3. **API de données** (interne, faite ; voir `docs/api.md`) : stations autour d'un point (avec marque), recherche de lieux par préfixe, paramètre `zoom`, route `/v1/vue` (points visibles dans une boîte). Contrat versionné `/v1/…`. SQL isolé dans des dépôts de classes, portable vers PostgreSQL/PostGIS.
+3. **API de données** (interne, faite ; voir `docs/api.md`) : stations autour d'un point (avec marque), recherche de lieux par préfixe, paramètre `zoom`, route `/v1/vue` (points visibles dans une boîte). Contrat versionné `/v1/…`. SQL isolé dans des dépôts de classes (Doctrine DBAL), portable vers PostgreSQL/PostGIS.
 4. **Tuiles** : fichiers PMTiles statiques (France z15, Europe bas zoom), servis par Apache ; voir `docs/tuiles.md`. Polices et sprites à auto-héberger.
 5. **Brancher RuneRide** : `FOND_DE_CARTE` et les routes de ravitaillement de la baseline pointent vers cette API.
 6. **Plus tard, hors mutualisé (AWS)** : adresses complètes, itinéraires.
@@ -36,3 +36,16 @@ Reste à faire, honnêtement :
 - Le portage PostgreSQL/PostGIS est préparé (SQL commun, classe `Spatial`) mais pas essayé.
 - Boîte englobante approximative : pas de gestion de l'antiméridien (`/v1/vue` le refuse) ; recherche de lieux sur `nom` seulement (pas `nom_alt`) ; pas de CORS ni de limitation de débit.
 - `lieux` avec préfixe très court (2 lettres) matérialise des dizaines de milliers de lignes : mesuré environ 20 ms en local (première version), à surveiller sur l'hébergeur.
+
+## Accès SQL : Doctrine DBAL (17/10/2026)
+
+Adopté : `doctrine/dbal` 4.5.0 (bibliothèque seule, pas l'ORM ; exige PHP >= 8.2, compatible avec le `>=8.3` du projet). `Database::connect()` renvoie une `Doctrine\DBAL\Connection` paresseuse construite depuis le même DSN PDO du `.env` (pilotes `mysql` et `pgsql`). `StationRepository` et `LieuRepository` utilisent le `QueryBuilder` : valeurs toujours en paramètres nommés (`setParameter`), `LIMIT` via `setMaxResults`, plus aucune concaténation de valeur. Les fonctions spatiales MariaDB et les `FORCE INDEX` restent dans `Spatial.php` (fragments constants à paramètres nommés `:point`, `:boite`, `:zoom`...), avec l'équivalent PostGIS en commentaire ; stratégie par zoom inchangée (index `min_zoom` jusqu'à z9, index spatial dès z10).
+
+Vérifié : 72 tests PHPUnit verts sans changer une assertion (seul l'amorçage des deux tests d'intégration change : connexion DBAL, PDO natif via `getNativeConnection()` pour leurs vérifications directes) ; `EXPLAIN` identique avant/après sur 4 requêtes représentatives (stations autour, vue z5 stations, vue z12 lieux, préfixe de lieux) et résultats identiques (même empreinte) ; charges d'injection rejouées contre `php -S` (apostrophes, `DROP TABLE`, `UNION`, `%%`, `limite`/`zoom`/`lat`/`rayon`/`bbox` piégés) : rejets 400 ou listes vides, tables intactes.
+
+Reste à faire :
+
+- **Baseline** (dépôt `runeride`, non touché ici) : y adopter la même approche DBAL, puis aligner `FOND_DE_CARTE` et les routes de ravitaillement sur cette API (lot 5).
+- Envoyer `vendor/` (avec `doctrine/dbal`, `psr/log`, `psr/cache`, `doctrine/deprecations`) sur l'hébergeur ; vérifier `pdo_mysql` activé chez o2switch.
+- Le portage PostgreSQL/PostGIS reste à essayer : seuls `Spatial.php` et les `FORCE INDEX` sont à réécrire, mais aucun test sur PostgreSQL n'a été fait.
+- `bin/bench-zoom.php` reste en PDO brut (hors API, non migré).

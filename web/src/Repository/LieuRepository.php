@@ -3,11 +3,13 @@ declare(strict_types=1);
 
 namespace Carto\Repository;
 
-use PDO;
+use Doctrine\DBAL\{Connection, ParameterType};
 
 final class LieuRepository
 {
-    public function __construct(private readonly PDO $pdo, private readonly Spatial $spatial = new Spatial()) {}
+    private const COLONNES = 'osm_type, osm_id, categorie, nom, nom_alt, population, lat, lon, min_zoom';
+
+    public function __construct(private readonly Connection $db, private readonly Spatial $spatial = new Spatial()) {}
 
     /**
      * Lieux dont le nom commence par $prefixe (collation : casse et accents ignorés),
@@ -16,25 +18,27 @@ final class LieuRepository
      */
     public function parPrefixe(string $prefixe, int $limite, ?float $lat, ?float $lon, ?int $zoom = null): array
     {
-        $like = addcslashes($prefixe, '\\%_') . '%';
-        $params = [];
-        $distSel = '';
-        $order = 'COALESCE(population, 0) DESC';
+        $interne = $this->db->createQueryBuilder()
+            ->select(self::COLONNES)->from('osm_lieux')
+            ->where('nom LIKE :motif')
+            ->setParameter('motif', addcslashes($prefixe, '\\%_') . '%');
+        $tri = [['COALESCE(population, 0)', 'DESC']];
         if ($lat !== null && $lon !== null) {
-            $distSel = ', ' . $this->spatial->distanceM() . ' AS distance_m';
-            $params[] = $this->spatial->pointWkt($lat, $lon);
-            $order .= ', distance_m ASC';
+            $interne->addSelect($this->spatial->distanceM() . ' AS distance_m')->setParameter('point', $this->spatial->pointWkt($lat, $lon));
+            $tri[] = ['distance_m', 'ASC'];
         }
-        $condZoom = $zoom !== null ? ' AND min_zoom <= ?' : '';
-        $sql = "SELECT * FROM (SELECT osm_type, osm_id, categorie, nom, nom_alt, population, lat, lon, min_zoom$distSel
-                FROM osm_lieux WHERE nom LIKE ?$condZoom) t ORDER BY $order, osm_id ASC LIMIT " . (int) $limite;
-        $params[] = $like;
         if ($zoom !== null) {
-            $params[] = $zoom;
+            $interne->andWhere('min_zoom <= :zoom')->setParameter('zoom', $zoom, ParameterType::INTEGER);
         }
-        $st = $this->pdo->prepare($sql);
-        $st->execute($params);
-        return $st->fetchAll();
+        $tri[] = ['osm_id', 'ASC'];
+        $qb = $this->db->createQueryBuilder()
+            ->select('*')->from('(' . $interne->getSQL() . ')', 't')
+            ->setMaxResults($limite)
+            ->setParameters($interne->getParameters(), $interne->getParameterTypes());
+        foreach ($tri as [$expr, $sens]) {
+            $qb->addOrderBy($expr, $sens);
+        }
+        return $qb->executeQuery()->fetchAllAssociative();
     }
 
     /**
@@ -44,11 +48,14 @@ final class LieuRepository
      */
     public function visibles(array $bbox, int $zoom, int $limite): array
     {
-        [$from, $where, $params] = $this->spatial->visibles('osm_lieux', $bbox, $zoom);
-        $sql = "SELECT osm_type, osm_id, categorie, nom, nom_alt, population, lat, lon, min_zoom
-                FROM $from WHERE $where ORDER BY min_zoom ASC, COALESCE(population, 0) DESC, osm_id ASC LIMIT " . (int) $limite;
-        $st = $this->pdo->prepare($sql);
-        $st->execute($params);
-        return $st->fetchAll();
+        $v = $this->spatial->visibles('osm_lieux', $bbox, $zoom);
+        $qb = $this->db->createQueryBuilder()
+            ->select(self::COLONNES)->from($v['from'])->where($v['where'])
+            ->orderBy('min_zoom', 'ASC')->addOrderBy('COALESCE(population, 0)', 'DESC')->addOrderBy('osm_id', 'ASC')
+            ->setMaxResults($limite);
+        foreach ($v['params'] as $nom => [$valeur, $type]) {
+            $qb->setParameter($nom, $valeur, $type);
+        }
+        return $qb->executeQuery()->fetchAllAssociative();
     }
 }
