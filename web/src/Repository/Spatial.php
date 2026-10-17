@@ -16,6 +16,33 @@ namespace Carto\Repository;
 final class Spatial
 {
     private const METRES_PAR_DEGRE = 111_320.0;
+    /**
+     * Jusqu'à ce zoom (inclus), la requête « visibles dans la boîte » lit d'abord l'index sur min_zoom
+     * (peu de lignes) ; au-delà, elle passe par l'index spatial (mesures : docs/osm.md).
+     */
+    public const SEUIL_ZOOM_INDEX_MIN_ZOOM = 9;
+
+    /**
+     * Source et condition (placeholders `?`) des points de $table visibles à $zoom dans la boîte
+     * [ouest, sud, est, nord]. Les indications FORCE INDEX sont propres à MariaDB/MySQL : sous PostGIS,
+     * les supprimer (le planificateur choisit) et écrire `geom && ST_MakeEnvelope(...)`.
+     * @param array{0:float,1:float,2:float,3:float} $bbox
+     * @return array{0:string,1:string,2:list<float|int|string>} [FROM, WHERE, paramètres dans l'ordre]
+     */
+    public function visibles(string $table, array $bbox, int $zoom): array
+    {
+        [$o, $s, $e, $n] = $bbox;
+        if ($zoom <= self::SEUIL_ZOOM_INDEX_MIN_ZOOM) {
+            return ["$table FORCE INDEX (ix_{$table}_min_zoom)", 'min_zoom <= ? AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?', [$zoom, $s, $n, $o, $e]];
+        }
+        return ["$table FORCE INDEX (sx_{$table}_geom)", 'MBRContains(ST_GeomFromText(?), geom) AND min_zoom <= ?', [$this->boiteDepuis($o, $s, $e, $n), $zoom]];
+    }
+
+    /** Boîte (ouest, sud, est, nord) en WKT, pour MBRContains. */
+    public function boiteDepuis(float $ouest, float $sud, float $est, float $nord): string
+    {
+        return sprintf('POLYGON((%1$.7F %3$.7F,%2$.7F %3$.7F,%2$.7F %4$.7F,%1$.7F %4$.7F,%1$.7F %3$.7F))', $ouest, $est, $sud, $nord);
+    }
 
     /** Condition SQL de pré-filtre sur l'index spatial ; un paramètre : la boîte en WKT. */
     public function conditionBoite(string $colonne = 'geom'): string

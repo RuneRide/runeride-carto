@@ -5,3 +5,6 @@ web/storage/*
 .env
 web/vendor/
 web/.phpunit.result.cache
+*.tsv
+*.csv
+__pycache__/

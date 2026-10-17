@@ -143,4 +143,125 @@ final class ApiIntegrationTest extends TestCase
         $this->assertSame(400, $this->get('/v1/lieux', ['q' => 'Toulouse', 'lat' => '43'])[0]);
         $this->assertSame(400, $this->get('/v1/lieux', ['q' => 'Toulouse', 'limite' => '500'])[0]);
     }
+
+    // ---- min_zoom, zoom, /v1/vue (lot 2) ----
+
+    public function testZoomFiltreStationsEtLieux(): void
+    {
+        $q = ['lat' => '43.6045', 'lon' => '1.4442', 'rayon' => '12', 'limite' => '100'];
+        $tout = $this->get('/v1/stations', $q)[1]['donnees'];
+        $z11 = $this->get('/v1/stations', $q + ['zoom' => '11'])[1]['donnees'];
+        $z15 = $this->get('/v1/stations', $q + ['zoom' => '15'])[1]['donnees'];
+        $this->assertEquals($tout, $z15, 'à z15 tout est visible');
+        $this->assertLessThan(count($tout), count($z11));
+        $this->assertNotEmpty($z11);
+        foreach ($z11 as $s) {
+            $this->assertLessThanOrEqual(11, $s['min_zoom']);
+        }
+        $this->assertSame([], $this->get('/v1/stations', $q + ['zoom' => '0'])[1]['donnees']);
+
+        $ids = fn (array $r) => array_column($r, 'id');
+        $z4 = $this->get('/v1/lieux', ['q' => 'Toulouse', 'zoom' => '4', 'limite' => '100'])[1]['donnees'];
+        $z5 = $this->get('/v1/lieux', ['q' => 'Toulouse', 'zoom' => '5', 'limite' => '100'])[1]['donnees'];
+        $tousL = $this->get('/v1/lieux', ['q' => 'Toulouse', 'limite' => '100'])[1]['donnees'];
+        $this->assertNotContains('n/26686518', $ids($z4), 'Toulouse (min_zoom 5) invisible à z4');
+        $this->assertContains('n/26686518', $ids($z5), 'visible à z5');
+        $this->assertContains('n/26686518', $ids($tousL), 'et sans zoom');
+        foreach ($z4 as $x) {
+            $this->assertLessThanOrEqual(4, $x['min_zoom']);
+        }
+    }
+
+    public function testVueCoherenteAvecMinZoomAuxDeuxStrategies(): void
+    {
+        // z9 (index min_zoom) et z10 (index spatial) : mêmes règles, résultats vérifiés contre un calcul direct
+        foreach ([[9, '0.8', '0.5'], [10, '0.5', '0.35'], [4, '12', '8'], [15, '0.06', '0.04']] as [$z, $w, $h]) {
+            $o = 1.44 - (float) $w / 2; $e = 1.44 + (float) $w / 2; $s = 43.6 - (float) $h / 2; $n = 43.6 + (float) $h / 2;
+            [$code, $body] = $this->get('/v1/vue', ['zoom' => (string) $z, 'bbox' => "$o,$s,$e,$n", 'limite' => '500']);
+            $this->assertSame(200, $code, "z$z");
+            $this->assertFalse($body['meta']['tronque']);
+            $attendu = 0;
+            foreach (['osm_lieux', 'osm_stations'] as $t) {
+                $st = $this->pdo->prepare("SELECT COUNT(*) FROM $t WHERE min_zoom <= ? AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ?");
+                $st->execute([$z, $s, $n, $o, $e]);
+                $attendu += (int) $st->fetchColumn();
+            }
+            $this->assertSame($attendu, $body['meta']['nombre'], "z$z : nombre de points visibles");
+            foreach ($body['donnees']['lieux'] as $x) {
+                $this->assertLessThanOrEqual($z, $x['min_zoom']);
+                $this->assertGreaterThanOrEqual($s, $x['lat']);
+                $this->assertLessThanOrEqual($n, $x['lat']);
+                $this->assertGreaterThanOrEqual($o, $x['lon']);
+                $this->assertLessThanOrEqual($e, $x['lon']);
+                $this->assertArrayNotHasKey('distance_m', $x);
+            }
+            $this->assertStringContainsString('OpenStreetMap', $body['attribution']);
+        }
+    }
+
+    public function testVueLimiteTotaleEtTroncature(): void
+    {
+        [$code, $body] = $this->get('/v1/vue', ['zoom' => '15', 'bbox' => '2.30,48.84,2.38,48.88', 'limite' => '10']);
+        $this->assertSame(200, $code);
+        $this->assertSame(10, $body['meta']['nombre']);
+        $this->assertTrue($body['meta']['tronque']);
+        $this->assertSame(10, count($body['donnees']['stations']) + count($body['donnees']['lieux']));
+        // les plus importants d'abord : le plus grand min_zoom gardé n'est pas inférieur à ceux écartés ; ici, on vérifie le tri
+        $zooms = array_merge(array_column($body['donnees']['stations'], 'min_zoom'), array_column($body['donnees']['lieux'], 'min_zoom'));
+        $this->assertLessThanOrEqual(15, max($zooms));
+        $grand = $this->get('/v1/vue', ['zoom' => '15', 'bbox' => '2.30,48.84,2.38,48.88', 'limite' => '500'])[1];
+        $this->assertGreaterThan(10, $grand['meta']['nombre']);
+        $this->assertLessThanOrEqual(500, $grand['meta']['nombre']);
+        $garde = $zooms;
+        sort($garde);
+        $tous = array_merge(array_column($grand['donnees']['stations'], 'min_zoom'), array_column($grand['donnees']['lieux'], 'min_zoom'));
+        sort($tous);
+        $this->assertSame($garde, array_slice($tous, 0, 10), 'la troncature garde les points de plus petit min_zoom');
+    }
+
+    public function testVueValidation(): void
+    {
+        $this->assertSame(400, $this->get('/v1/vue', ['bbox' => '1,43,1.1,43.1'])[0], 'zoom requis');
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10'])[0], 'bbox requise');
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10', 'bbox' => '1,43,5,47'])[0], 'trop grande à z10');
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '23', 'bbox' => '1,43,1.01,43.01'])[0]);
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10', 'bbox' => '1,43,1.1,43.1', 'limite' => '501'])[0]);
+        $this->assertSame(400, $this->get('/v1/stations', ['lat' => '43', 'lon' => '1', 'zoom' => '99'])[0]);
+        $this->assertSame(400, $this->get('/v1/lieux', ['q' => 'Toulouse', 'zoom' => '-1'])[0]);
+    }
+
+    /** @return iterable<string,array{0:string}> */
+    public static function charges(): iterable
+    {
+        yield 'quote' => ["5' OR '1'='1"];
+        yield 'drop' => ["5; DROP TABLE osm_lieux;--"];
+        yield 'union' => ["5 UNION SELECT 1,2,3"];
+        yield 'commentaire' => ["5/**/OR/**/1=1"];
+        yield 'nul' => ["5\0"];
+        yield 'hex' => ["0x10"];
+        yield 'espace' => ["5 "];
+        yield 'retour ligne' => ["5\n"];
+        yield 'sleep' => ["(SELECT SLEEP(5))"];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('charges')]
+    public function testInjectionDansLesNouveauxParametres(string $charge): void
+    {
+        $avant = (int) $this->pdo->query('SELECT COUNT(*) FROM osm_lieux')->fetchColumn();
+        $t0 = microtime(true);
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => $charge, 'bbox' => '1,43,1.1,43.1'])[0]);
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10', 'bbox' => '1,43,1.1,' . $charge])[0]);
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10', 'bbox' => $charge . ',43,1.1,43.1'])[0]);
+        $this->assertSame(400, $this->get('/v1/vue', ['zoom' => '10', 'bbox' => '1,43,1.1,43.1', 'limite' => $charge])[0]);
+        $this->assertSame(400, $this->get('/v1/stations', ['lat' => '43', 'lon' => '1', 'zoom' => $charge])[0]);
+        $this->assertSame(400, $this->get('/v1/lieux', ['q' => 'Toulouse', 'zoom' => $charge])[0]);
+        $this->assertLessThan(2.0, microtime(true) - $t0, 'aucun SLEEP exécuté');
+        $this->assertSame($avant, (int) $this->pdo->query('SELECT COUNT(*) FROM osm_lieux')->fetchColumn());
+    }
+
+    public function testChargeEnTableauNeCasseRien(): void
+    {
+        $this->query = ['zoom' => ['1'], 'bbox' => ['1,43,1.1,43.1']];
+        $this->assertSame(400, $this->get('/v1/vue', $this->query)[0]);
+    }
 }

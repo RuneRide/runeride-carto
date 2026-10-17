@@ -24,7 +24,7 @@ if (!$guard->autorise($_SERVER['HTTP_X_API_KEY'] ?? null)) {
 
 $pdo = null;
 $router = new Router();
-$router->add('GET', '/', fn () => ['service' => 'RuneRide Carto', 'api' => 'v1', 'routes' => ['/v1/sante', '/v1/stations', '/v1/lieux'], 'interne' => true]);
+$router->add('GET', '/', fn () => ['service' => 'RuneRide Carto', 'api' => 'v1', 'routes' => ['/v1/sante', '/v1/stations', '/v1/lieux', '/v1/vue'], 'interne' => true]);
 Api::register($router, function () use (&$pdo, $config) { return $pdo ??= Database::connect($config); }, $config->get('CARTO_ENV', 'production'), $query);
 
 try {
