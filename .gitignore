@@ -8,3 +8,7 @@ web/.phpunit.result.cache
 *.tsv
 *.csv
 __pycache__/
+
+# Raido (rust/)
+rust/target/
+donnees/

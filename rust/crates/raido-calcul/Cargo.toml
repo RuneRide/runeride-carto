@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: EUPL-1.2
+[package]
+name = "raido-calcul"
+description = "Moteur Raido : A* par arcs sur tuiles rkyv, fonction de coût motard, boucles par pétales"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raido-format = { path = "../raido-format" }
+rkyv.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+clap.workspace = true

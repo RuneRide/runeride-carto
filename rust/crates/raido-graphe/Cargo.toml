@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: EUPL-1.2
+[package]
+name = "raido-graphe"
+description = "Pipeline Raido : extrait Geofabrik (.osm.pbf) → graphe routier scoré en tuiles rkyv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+raido-format = { path = "../raido-format" }
+osmpbf = "0.3"
+rkyv.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+rayon.workspace = true
+clap.workspace = true

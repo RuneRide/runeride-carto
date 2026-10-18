@@ -4,6 +4,7 @@ Données cartographiques de RuneRide, prévues pour `carto.runeride.fr` : fond d
 
 - Pré-traitement **en local**, jamais sur l'hébergeur : `bin/osm-extraire` filtre un extrait Geofabrik et produit des fichiers TSV et un `charger.sql` (voir `docs/osm.md`).
 - Hébergement visé : o2switch (PHP 8 + MariaDB, fichiers statiques). Les parties lourdes (adresses complètes, itinéraires) iraient sur AWS plus tard, derrière le même nom.
+- **Raido** (`rust/`) : graphe routier scoré en tuiles et moteur de balade à moto (Rust, sans serveur), voir `docs/raido.md` et la spécification `runeride/docs/itineraire.md`.
 - API **interne** à RuneRide pour l'instant : ouvrir à des tiers demanderait de revoir les CGV d'o2switch.
 - Données © contributeurs OpenStreetMap, licence ODbL (attribution obligatoire dans toute application qui les affiche).
 

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: EUPL-1.2
+[workspace]
+resolver = "2"
+members = ["crates/raido-format", "crates/raido-graphe", "crates/raido-calcul"]
+
+[workspace.package]
+edition = "2021"
+license = "EUPL-1.2"
+version = "0.1.0"
+rust-version = "1.88"
+
+[workspace.dependencies]
+rkyv = "0.8"
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+rayon = "1"
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true
+panic = "abort"

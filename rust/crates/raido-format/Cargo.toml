@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: EUPL-1.2
+[package]
+name = "raido-format"
+description = "Format des tuiles de graphe routier Raido (rkyv, Web Mercator z8) partagé par le pipeline et le moteur"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+rkyv.workspace = true
+serde.workspace = true
