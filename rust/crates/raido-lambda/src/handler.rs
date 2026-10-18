@@ -14,12 +14,15 @@ use raido_calcul::charge::{Graphe, SourceCache, SourceDisque, SourceTuiles};
 use raido_calcul::requete::{self, Requete};
 use serde_json::{json, Value};
 
+use crate::jeton::{self, base64_decoder, ErreurJeton, SourceJwks, Verificateur};
 use crate::s3::SourceS3;
 
 pub struct Contexte {
     pub graphe: Mutex<Graphe>,
     pub source_nom: String,
     pub version_binaire: &'static str,
+    /// `None` : vérification désactivée (`RAIDO_JETON=desactive`, tests locaux seulement).
+    pub verificateur: Option<Verificateur>,
 }
 
 /// Journal JSON sur la sortie d'erreur (CloudWatch Logs la capture comme la sortie standard), une ligne
@@ -34,9 +37,28 @@ pub fn journal(niveau: &str, mut v: Value) {
 impl Contexte {
     /// Variables : `RAIDO_SOURCE` (`s3`, défaut, ou `local:/chemin`), `RAIDO_BUCKET`, `RAIDO_PREFIXE`
     /// (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`, vide pour désactiver), `RAIDO_S3_ENDPOINT` (tests),
-    /// `RAIDO_THREADS`, `AWS_REGION`.
+    /// `RAIDO_THREADS`, `AWS_REGION` ; jeton : `RAIDO_JETON` (`obligatoire`, défaut, ou `desactive`),
+    /// `RAIDO_JWKS_URL` (défaut `https://app.runeride.fr/.well-known/jwks.json`) ou `RAIDO_JWKS_FICHIER`,
+    /// `RAIDO_EMETTEUR` (`https://app.runeride.fr`), `RAIDO_AUDIENCE` (`raido`).
     pub fn depuis_env() -> Result<Contexte> {
         let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
+        let verificateur = if var("RAIDO_JETON").as_deref() == Some("desactive") {
+            journal("WARN", json!({"evenement": "jeton_desactive", "message": "aucune vérification du jeton : réservé aux essais locaux"}));
+            None
+        } else {
+            let source = match var("RAIDO_JWKS_FICHIER") {
+                Some(f) => SourceJwks::Fichier(PathBuf::from(f)),
+                None => SourceJwks::Url(var("RAIDO_JWKS_URL").unwrap_or_else(|| "https://app.runeride.fr/.well-known/jwks.json".into())),
+            };
+            let v = Verificateur::nouveau(source, &var("RAIDO_EMETTEUR").unwrap_or_else(|| "https://app.runeride.fr".into()), &var("RAIDO_AUDIENCE").unwrap_or_else(|| "raido".into()));
+            // Chargement au démarrage : un JWKS injoignable est signalé mais n'empêche pas de démarrer
+            // (nouvel essai à la première requête, puis toutes les 5 minutes).
+            match v.charger() {
+                Ok(n) => journal("INFO", json!({"evenement": "jwks", "cles": n})),
+                Err(e) => journal("WARN", json!({"evenement": "jwks", "erreur": format!("{e:#}")})),
+            }
+            Some(v)
+        };
         if let Some(t) = var("RAIDO_THREADS").and_then(|t| t.parse::<usize>().ok()) {
             let _ = rayon::ThreadPoolBuilder::new().num_threads(t).build_global();
         }
@@ -59,8 +81,16 @@ impl Contexte {
         let source_nom = source.nom();
         let graphe = Graphe::depuis_source(source).context("ouverture du graphe")?;
         journal("INFO", json!({"evenement": "demarrage", "source": source_nom, "graphe": graphe.index.construit_le, "tuiles": graphe.index.tuiles.len()}));
-        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION") })
+        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION"), verificateur })
     }
+}
+
+/// Jeton « Bearer » de l'en-tête `authorization` (noms d'en-tête en minuscules dans l'événement v2).
+fn jeton_de(evt: &Value) -> Option<&str> {
+    let entetes = evt.get("headers")?.as_object()?;
+    let a = entetes.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization"))?.1.as_str()?;
+    let (schema, valeur) = a.split_once(' ')?;
+    schema.eq_ignore_ascii_case("bearer").then(|| valeur.trim())
 }
 
 fn reponse(statut: u16, corps: Value) -> Value {
@@ -102,35 +132,6 @@ fn corps(evt: &Value) -> Result<Vec<u8>> {
     }
 }
 
-/// Décodeur base64 standard minimal (le corps JSON est petit ; pas de dépendance).
-fn base64_decoder(s: &str) -> Option<Vec<u8>> {
-    let val = |c: u8| -> Option<u32> {
-        Some(match c {
-            b'A'..=b'Z' => (c - b'A') as u32,
-            b'a'..=b'z' => (c - b'a') as u32 + 26,
-            b'0'..=b'9' => (c - b'0') as u32 + 52,
-            b'+' | b'-' => 62,
-            b'/' | b'_' => 63,
-            _ => return None,
-        })
-    };
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let (mut acc, mut bits) = (0u32, 0u32);
-    for &c in s.as_bytes() {
-        if c == b'=' || c == b'\n' || c == b'\r' {
-            continue;
-        }
-        acc = acc << 6 | val(c)?;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
-        }
-    }
-    Some(out)
-}
-
 /// Traite un événement HTTP et renvoie la réponse au format Function URL.
 pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
     let (chemin, methode) = route(evt);
@@ -149,6 +150,15 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
         }
         ("POST", "/v1/balade") | ("POST", "/v1/trajet") => {
             let boucle = chemin.contains("balade");
+            // Jeton court : obligatoire sauf en mode désactivé. Ses revendications bornent la requête (spec D4, §7.2).
+            let revendications = match &ctx.verificateur {
+                None => None,
+                Some(v) => match v.verifier(jeton_de(evt).unwrap_or(""), jeton::maintenant()) {
+                    Ok(r) => Some(r),
+                    Err(ErreurJeton::Absent) => return erreur(401, "jeton requis (Authorization: Bearer …)", "jeton_requis"),
+                    Err(e) => return erreur(401, &e.to_string(), "jeton_invalide"),
+                },
+            };
             match corps(evt).and_then(|c| serde_json::from_slice::<Requete>(&c).context("JSON de la requête")) {
                 Err(e) => erreur(400, &format!("requête illisible : {e}"), "requete_invalide"),
                 Ok(mut r) => {
@@ -159,6 +169,17 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                         return erreur(400, "arrivee est obligatoire pour /v1/trajet", "requete_invalide");
                     } else {
                         r.retour = false;
+                    }
+                    if let Some(rev) = &revendications {
+                        if rev.est_petite_boucle() {
+                            let trop_long = !boucle || r.distance_cible_m().map_or(true, |d| d > rev.limite_km() * 1000.0);
+                            if trop_long {
+                                return erreur(403, &format!("ce jeton n'autorise qu'une boucle de {:.0} km au plus", rev.limite_km()), "quota_requis");
+                            }
+                        }
+                        if rev.palier != "abonne" && r.preferences.decouverte > 0 {
+                            return erreur(403, "la découverte est réservée aux abonnés", "abonnement_requis");
+                        }
                     }
                     let mut g = ctx.graphe.lock().unwrap_or_else(|e| e.into_inner());
                     match requete::traiter(&mut g, &r) {
@@ -187,6 +208,15 @@ mod tests {
     fn base64() {
         assert_eq!(base64_decoder("eyJhIjoxfQ==").unwrap(), b"{\"a\":1}");
         assert!(base64_decoder("@@").is_none());
+    }
+
+    #[test]
+    fn jeton_bearer() {
+        let e = json!({"headers": {"Authorization": "Bearer abc.def.ghi"}});
+        assert_eq!(jeton_de(&e), Some("abc.def.ghi"));
+        let e = json!({"headers": {"authorization": "Basic x"}});
+        assert_eq!(jeton_de(&e), None);
+        assert_eq!(jeton_de(&json!({})), None);
     }
 
     #[test]

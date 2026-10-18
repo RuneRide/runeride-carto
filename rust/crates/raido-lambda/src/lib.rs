@@ -4,4 +4,5 @@
 //! graphe sur S3 à travers le cache `/tmp` ; `handler` traduit l'événement HTTP en requête Raido.
 
 pub mod handler;
+pub mod jeton;
 pub mod s3;

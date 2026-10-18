@@ -136,7 +136,9 @@ Rien n'est déployé : tout ce qui suit a été compilé et exercé **en local**
 | Emballage arm64 musl sans compilateur C (TLS en Rust pur, `rust-lld`) | `rust/tools/package-lambda.sh` |
 | Module Terraform `raido/` : S3 privé, Lambda arm64 + Function URL `AWS_IAM`, CloudFront avec **OAC de type `lambda`**, CORS, alarmes, budget, README | `runeride-cloud/terraform/raido/` |
 
-Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemin`), `RAIDO_BUCKET`, `RAIDO_PREFIXE` (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`), `RAIDO_S3_ENDPOINT` (tests), `RAIDO_THREADS`, `AWS_REGION` et les identifiants fournis par Lambda.
+Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemin`), `RAIDO_BUCKET`, `RAIDO_PREFIXE` (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`), `RAIDO_S3_ENDPOINT` (tests), `RAIDO_THREADS`, `AWS_REGION` et les identifiants fournis par Lambda ; jeton : `RAIDO_JETON` (`obligatoire` | `desactive`), `RAIDO_JWKS_URL` ou `RAIDO_JWKS_FICHIER`, `RAIDO_EMETTEUR`, `RAIDO_AUDIENCE`.
+
+**Jeton court** (`raido-lambda/src/jeton.rs`, spec §7.1) : JWT RS256 au format exact de la classe PHP `RuneRide\Auth\Jwt` (en-tête `kid` = 16 premiers hexadécimaux de sha256 du PEM public, JWKS `/.well-known/jwks.json`), vérifié avec la caisse `rsa` 0.9 (Rust pur). Revendications : `iss`, `aud` = `raido` (les jetons de session `aud = runeride` sont refusés), `sub` (jamais journalisé), `iat`, `exp` (tolérance 60 s), `palier` (`gratuit` | `abonne`), `type` (`petite_boucle` | `grand`), `limite_km` (défaut 25). Application : `petite_boucle` → `/v1/balade` seul et distance cible ≤ `limite_km`, sinon `403 quota_requis` ; `palier` ≠ `abonne` et découverte demandée → `403 abonnement_requis` ; jeton absent → `401 jeton_requis` ; invalide → `401 jeton_invalide`. Le JWKS est lu au démarrage et rechargé sur `kid` inconnu (au plus toutes les 5 min). La **délivrance** (`POST /api/balade/jeton`, PHP) est à écrire en J4.
 
 ### Mesures (locales)
 
@@ -153,7 +155,7 @@ Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemi
 ### Ce qui n'est pas fait
 
 - **Aucun appel à AWS** : ni `plan`, ni `apply`, ni S3 réel. Le TLS en Rust pur face aux points de terminaison d'AWS n'est pas vérifié (test jetable de runeride-weather en attente).
-- **Vérification du jeton court** (JWT RS256 du PHP, spec §7.1) : absente ; l'API serait ouverte à qui connaît l'adresse CloudFront. À faire avant de rattacher le domaine.
+- **Délivrance du jeton court** côté PHP (`POST /api/balade/jeton`, quotas) : absente ; la vérification côté Lambda existe et a été exercée de bout en bout avec une clé `openssl` et des jetons signés au format du PHP (abonné accepté, jeton de session refusé, petite boucle bornée à 25 km, trajet et découverte refusés en gratuit).
 - Étapes, autonomie, météo, découverte par `troncons_url`, GPX, `/v1/lieu`, `/v1/apparier` : jalons suivants.
 - Le `POST` derrière un OAC Lambda exige l'en-tête `x-amz-content-sha256` côté client (README du module) : non exercé.
 

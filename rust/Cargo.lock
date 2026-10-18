@@ -1392,10 +1392,13 @@ dependencies = [
  "lambda_runtime",
  "raido-calcul",
  "raido-format",
+ "rand",
  "rayon",
+ "rsa",
  "rw-aws",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
 ]
 
@@ -1414,6 +1417,7 @@ version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
 dependencies = [
+ "libc",
  "rand_chacha",
  "rand_core",
 ]
