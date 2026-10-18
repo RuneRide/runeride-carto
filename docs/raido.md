@@ -25,9 +25,9 @@ cargo build --release
 
 `donnees/` (PBF et graphes) est ignoré par Git. Données © contributeurs OpenStreetMap (ODbL).
 
-### 1.1 Format des tuiles (version 2)
+### 1.1 Format des tuiles (version 3)
 
-- Tuile z8 Web Mercator ; nœuds (intersections) en CSR, arcs sortants, géométrie intermédiaire partagée entre l'arc aller et l'arc retour (drapeau `GEOM_INVERSEE`), restrictions de tourner triées par nœud pivot.
+- Tuile **z9** Web Mercator (≈ 75 × 50 km en France ; z8 en J1, voir §2.4) ; nœuds (intersections) en CSR, arcs sortants, géométrie intermédiaire partagée entre l'arc aller et l'arc retour (drapeau `GEOM_INVERSEE`), restrictions de tourner triées par nœud pivot.
 - Identifiants globaux `cle_tuile << 32 | indice_local` pour les nœuds et les arcs ; un arc franchissant une frontière de tuile vit dans la tuile de sa source.
 - Par arc : cible, arc inverse, longueur (m), temps de base (ds), classe, drapeaux (péage, tunnel, non revêtu, revêtement inconnu, rond-point), 4 scores sur 8 bits (sinuosité, scénique, motard, agglomération), `way_id` + indice de segment et géohash du milieu (identifiant stable, spec §5.3).
 - Par nœud : position en 1e-7°, drapeau `PRINCIPAL` (composante connexe principale).
@@ -45,14 +45,14 @@ cargo build --release
 - **Sinuosité** : radians de changement de cap par kilomètre, saturée à 4 rad/km, plafonnée à 0,5 sous 150 m.
 - **Agglomération** : 1 dans un rayon `13,5 × √population` m autour des localités ≥ 5 000 habitants, décroissant à 0 à 2 km de la limite.
 - **Scénique**, **motard** : 0 (jalons J2 et J7).
-- Temps de base : vitesse par classe (110/85/75/70/60/50/35/55/15 km/h), bornée à 95 % de `maxspeed`, ralentie jusqu'à −35 % par la sinuosité, 25 km/h dans les ronds-points.
+- Temps de base : vitesse par classe (115/90/80/75/65/55/40/60/20 km/h, provisoire), bornée par `maxspeed`, ralentie jusqu'à −25 % par la sinuosité, 30 km/h dans les ronds-points.
 - Coût = `temps × (1 + Σ poids × (1 − score) + poids_agglo × agglo [+ malus bretelle/résidentiel] [+ découverte])`, × 4 pour les arcs déjà empruntés par la boucle en cours ; exclusions dures : autoroutes, péages, non revêtu, tunnels.
 
 ### 1.4 Algorithmes (`astar.rs`, `boucle.rs`)
 
 - A\* unidirectionnel **par arcs** (état = arc d'arrivée), heuristique distance / 110 km/h en décisecondes (admissible, le coût est ≥ temps), `epsilon` optionnel pour un A\* pondéré.
 - Virages : restrictions `no_*`/`only_*` du nœud pivot, demi-tour interdit sauf impasse. Un arc vers une tuile non chargée est infranchissable.
-- Boucle : 12 caps × 2 rayons = 24 pétales, triangle `D → P1 → P2 → D` avec rayon `L/3 × 0,8`, recouvrement pénalisé entre branches, note composite (écart de distance, recouvrement, agglomération, bonus sinuosité) ; pétales calculés en parallèle.
+- Boucle : 12 caps × 2 rayons = 24 pétales, triangle `D → P1 → P2 → D` avec rayon `L/3 × 0,72`, recouvrement pénalisé entre branches, note composite (écart de distance, recouvrement, agglomération, bonus sinuosité) ; pétales calculés en parallèle ; les trois meilleurs sont rejoués avec un rayon corrigé si leur longueur s'écarte de plus de 4 % de la cible.
 - Nœud d'accroche : le plus proche dans la composante principale, avec un arc double sens franchissable et ≥ 60 nœuds joignables malgré les exclusions ; rayon 3 km puis 9 km, sinon erreur explicite.
 
 ## 2. Mesures (18/10/2026, portable Linux 20 cœurs, disque local)
@@ -96,10 +96,30 @@ Lecture : la cible « < 4 s à chaud » (spec §8) est **tenue en médiane et au
 
 ### 2.3 Ce que J1 apprend pour la suite
 
-- **Tuiles trop grosses** : 41 Mo pour Lyon contre 10 Mo visés (spec §5.3). Passer en **z9** (quatre fois plus de tuiles, ≈ 10 Mo au maximum) ou découper les tuiles urbaines. Cela réduit aussi les octets lus à froid (76 Mo par boucle aujourd'hui).
-- **Durées trop longues ?** 120 km de boucle en montagne donnent 150 à 200 min, soit 40 à 50 km/h de moyenne : les vitesses de classe et le ralentissement de sinuosité sont sans doute pessimistes. À calibrer en J2 sur les trajets GeoRide réels (spec O3).
+- **Tuiles trop grosses** (z8) : 41 Mo pour Lyon contre 10 Mo visés (spec §5.3). **Réglé le soir même par le passage en z9** (§2.4) : max 14,5 Mo, 54 Mo lus à froid.
+- **Durées trop longues ?** 120 km de boucle en montagne donnaient 150 à 200 min, soit 40 à 50 km/h de moyenne. **Vitesses relevées** (§2.4), 52 à 55 km/h désormais ; à calibrer pour de bon sur les trajets GeoRide réels (spec O3).
 - **Îlots** : 0,5 % des nœuds sont hors de la composante principale (hameaux reliés par des pistes exclues). Le drapeau `PRINCIPAL` règle l'accroche ; la haute montagne sans route à 9 km renvoie une erreur explicite.
-- **Boucle** : 24 pétales suffisent à produire 18 à 24 candidats avec un recouvrement de 0 à 5 % ; la variante retenue dépasse souvent la distance cible de 5 à 15 % (le facteur 0,8 de détour routier est un peu fort en montagne : OUVERT, à ajuster par région ou par retour sur la longueur obtenue).
+- **Boucle** : 24 pétales suffisent à produire 18 à 24 candidats avec un recouvrement de 0 à 5 % ; la variante retenue dépassait la distance cible de 5 à 15 % avec le facteur 0,8. **Réglé** par le facteur 0,72 et le raffinement des trois meilleurs (§2.4) : +3 à +5 %.
+
+### 2.4 Itération du 18/10/2026 au soir : z9, vitesses, raffinement (format v3)
+
+Trois changements après l'acceptation de J1, mêmes bancs (1 fil, mêmes graines) :
+
+| Changement | Avant | Après |
+|---|---|---|
+| Tuiles **z9** au lieu de z8 (clé `x << 16 \| y`) | 10 tuiles, max **41 Mo**, 76 Mo lus par boucle à froid | **25 tuiles, médiane 4,1 Mo, max 14,5 Mo** (Lyon et Grenoble restent > 10 Mo), **54 Mo** lus à froid |
+| Vitesses par classe relevées (115/90/80/75/65/55/40/60/20 km/h), `maxspeed` pris tel quel, sinuosité −25 % au plus, ronds-points 30 km/h | 43 km/h de moyenne sur les boucles | **52 à 55 km/h** |
+| Pétales : rayon 0,72 × L/3 (au lieu de 0,8) + **raffinement** des 3 meilleurs candidats (rayon corrigé du rapport visé / obtenu quand l'écart dépasse 4 %) | boucles de +5 à +15 % trop longues | **+3 à +5 % en moyenne, \|écart\| 6 %** |
+
+| Boucle, 1 fil | Médiane | p95 | Max | Écart moyen |
+|---|---|---|---|---|
+| 60 km (30) | **0,53 s** | 0,97 s | 1,44 s | +4,3 % |
+| 120 km (30) | **1,79 s** | **2,90 s** | 3,03 s | +4,5 % |
+| 120 km à froid (10) | 1,87 s | 3,16 s | 3,16 s | +5,4 % |
+| 200 km (15) | 3,75 s | 6,31 s | 6,52 s | +3,1 % |
+| 120 km, 20 fils (30) | 0,29 s | 0,47 s | 0,49 s | +4,5 % |
+
+Le gain de temps à 120 km (p95 de 4,0 à 2,9 s) vient surtout des tuiles plus petites (moins d'octets touchés, meilleure localité) ; le raffinement coûte ≈ 0,1 s. Les vitesses restent des valeurs a priori : seule la calibration GeoRide (spec O3) les rendra justes.
 
 ## 3. Ce qui n'a pas été fait, honnêtement
 

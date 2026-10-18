@@ -61,6 +61,8 @@ fn connexe(g: &Graphe, p: &Preferences, depart: NoeudId) -> bool {
 #[derive(Clone, Debug)]
 pub struct Candidat {
     pub cap_deg: f64,
+    /// Facteur appliqué au rayon des pétales pour ce candidat.
+    pub facteur: f64,
     pub arcs: Vec<ArcId>,
     pub longueur_m: u64,
     pub temps_ds: u64,
@@ -106,27 +108,44 @@ pub fn balade(g: &Graphe, p: &Preferences, depart: NoeudId, pb: &ParametresBoucl
     let essais: Vec<(f64, f64)> = (0..pb.nb_caps)
         .flat_map(|i| pb.facteurs.iter().map(move |&f| (360.0 * i as f64 / pb.nb_caps as f64, f)))
         .collect();
-    let mut candidats: Vec<Candidat> = essais
-        .par_iter()
-        .filter_map(|&(cap, f)| {
-            // Triangle quasi équilatéral de périmètre ≈ distance : rayon des sommets ≈ L/3,
-            // corrigé du détour routier (facteur 0,8).
-            let r = pb.distance_m / 3.0 * f * 0.8;
-            let (la1, lo1) = geo::destination(lat, lon, cap, r);
-            let (la2, lo2) = geo::destination(lat, lon, cap + 60.0, r);
-            let p1 = noeud_accroche(g, p, la1, lo1, 3_000.0)?;
-            let p2 = noeud_accroche(g, p, la2, lo2, 3_000.0)?;
-            if p1 == depart || p2 == depart || p1 == p2 {
-                return None;
-            }
-            boucle_par(g, p, depart, p1, p2, cap, pb)
-        })
+    let petale = |cap: f64, f: f64| -> Option<Candidat> {
+        // Triangle quasi équilatéral de périmètre ≈ distance : rayon des sommets ≈ L/3,
+        // corrigé du détour routier (0,72 : avec 0,8 les boucles dépassaient de 5 à 15 %).
+        let r = pb.distance_m / 3.0 * f * 0.72;
+        let (la1, lo1) = geo::destination(lat, lon, cap, r);
+        let (la2, lo2) = geo::destination(lat, lon, cap + 60.0, r);
+        let p1 = noeud_accroche(g, p, la1, lo1, 3_000.0)?;
+        let p2 = noeud_accroche(g, p, la2, lo2, 3_000.0)?;
+        if p1 == depart || p2 == depart || p1 == p2 {
+            return None;
+        }
+        boucle_par(g, p, depart, p1, p2, cap, f, pb)
+    };
+    let mut candidats: Vec<Candidat> = essais.par_iter().filter_map(|&(cap, f)| petale(cap, f)).collect();
+    candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
+
+    // Raffinement : les trois meilleurs trop longs ou trop courts (> 4 %) sont rejoués
+    // avec un rayon corrigé du rapport visé / obtenu ; on garde le meilleur des deux.
+    let a_raffiner: Vec<(usize, f64, f64)> = candidats
+        .iter()
+        .take(3)
+        .enumerate()
+        .filter(|(_, c)| ((c.longueur_m as f64 - pb.distance_m) / pb.distance_m).abs() > 0.04)
+        .map(|(i, c)| (i, c.cap_deg, c.facteur * pb.distance_m / c.longueur_m as f64))
         .collect();
+    let raffines: Vec<(usize, Candidat)> =
+        a_raffiner.par_iter().filter_map(|&(i, cap, f)| petale(cap, f).map(|c| (i, c))).collect();
+    for (i, c) in raffines {
+        if c.note < candidats[i].note {
+            candidats[i] = c;
+        }
+    }
     candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
     Ok(candidats)
 }
 
-fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId, cap: f64, pb: &ParametresBoucle) -> Option<Candidat> {
+#[allow(clippy::too_many_arguments)]
+fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId, cap: f64, facteur: f64, pb: &ParametresBoucle) -> Option<Candidat> {
     let mut penalises: HashSet<ArcId> = HashSet::new();
     let mut arcs = Vec::new();
     let mut explores = 0;
@@ -164,5 +183,5 @@ fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId,
     // Note : écart de distance au-delà de la tolérance (fort), recouvrement (fort),
     // agglomération (moyen), sinuosité (bonus).
     let note = (ecart - pb.tolerance).max(0.0) * 4.0 + ecart + recouvrement * 3.0 + agglo * 1.0 - sinuosite * 1.5;
-    Some(Candidat { cap_deg: cap, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, note, noeuds_explores: explores })
+    Some(Candidat { cap_deg: cap, facteur, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, note, noeuds_explores: explores })
 }

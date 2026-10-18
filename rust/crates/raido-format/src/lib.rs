@@ -10,12 +10,12 @@
 
 use rkyv::{Archive, Deserialize, Serialize};
 
-/// Niveau de zoom du découpage en tuiles.
-pub const ZOOM: u32 = 8;
+/// Niveau de zoom du découpage en tuiles (z9 : ≈ 75 × 50 km en France ; z8 donnait 41 Mo pour Lyon).
+pub const ZOOM: u32 = 9;
 /// Version du format : à incrémenter à chaque changement de structure.
-pub const VERSION_FORMAT: u32 = 2;
+pub const VERSION_FORMAT: u32 = 3;
 
-/// Clé de tuile z8 : `x << 8 | y` (x, y < 256).
+/// Clé de tuile : `x << 16 | y`.
 pub type CleTuile = u32;
 /// Identifiant global de nœud : `cle_tuile << 32 | indice_local`.
 pub type NoeudId = u64;
@@ -36,7 +36,16 @@ pub fn local_de(id: u64) -> u32 {
     (id & 0xffff_ffff) as u32
 }
 
-/// Clé de la tuile z8 contenant un point (Web Mercator).
+#[inline]
+pub fn cle_xy(x: u32, y: u32) -> CleTuile {
+    x << 16 | y
+}
+#[inline]
+pub fn xy_de_cle(cle: CleTuile) -> (u32, u32) {
+    (cle >> 16, cle & 0xffff)
+}
+
+/// Clé de la tuile contenant un point (Web Mercator, zoom `ZOOM`).
 pub fn cle_tuile(lat: f64, lon: f64) -> CleTuile {
     let n = (1u32 << ZOOM) as f64;
     let x = ((lon + 180.0) / 360.0 * n).floor().clamp(0.0, n - 1.0) as u32;
@@ -44,13 +53,14 @@ pub fn cle_tuile(lat: f64, lon: f64) -> CleTuile {
     let y = ((1.0 - (lat_r.tan() + 1.0 / lat_r.cos()).ln() / std::f64::consts::PI) / 2.0 * n)
         .floor()
         .clamp(0.0, n - 1.0) as u32;
-    x << 8 | y
+    cle_xy(x, y)
 }
 
-/// Bornes (sud, ouest, nord, est) d'une tuile z8, en degrés.
+/// Bornes (sud, ouest, nord, est) d'une tuile, en degrés.
 pub fn bornes_tuile(cle: CleTuile) -> (f64, f64, f64, f64) {
     let n = (1u32 << ZOOM) as f64;
-    let (x, y) = ((cle >> 8) as f64, (cle & 0xff) as f64);
+    let (xi, yi) = xy_de_cle(cle);
+    let (x, y) = (xi as f64, yi as f64);
     let lon = |x: f64| x / n * 360.0 - 180.0;
     let lat = |y: f64| {
         let t = std::f64::consts::PI * (1.0 - 2.0 * y / n);
@@ -212,7 +222,8 @@ pub struct TuileIndex {
 
 /// Chemin relatif du fichier d'une tuile.
 pub fn chemin_tuile(cle: CleTuile) -> String {
-    format!("tuiles/{}/{}/{}.rkyv", ZOOM, cle >> 8, cle & 0xff)
+    let (x, y) = xy_de_cle(cle);
+    format!("tuiles/{ZOOM}/{x}/{y}.rkyv")
 }
 
 /// Encode un géohash de précision 9 (45 bits) en entier.

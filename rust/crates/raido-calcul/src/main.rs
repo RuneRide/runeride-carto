@@ -218,6 +218,8 @@ fn main() -> Result<()> {
             let mut temps = Vec::new();
             let mut echecs = 0;
             let mut octets_froid = Vec::new();
+            let mut ecarts = Vec::new();
+            let mut vitesses = Vec::new();
             let p = Preferences::balade();
             let dist = distance_km * 1000.0;
             let mut essais = 0;
@@ -240,6 +242,8 @@ fn main() -> Result<()> {
                 match cands.first() {
                     Some(c) => {
                         temps.push(dt);
+                        ecarts.push((c.longueur_m as f64 - dist) / dist);
+                        vitesses.push(c.longueur_m as f64 / 1000.0 / (c.temps_ds as f64 / 36_000.0));
                         println!(
                             "{lat:.4},{lon:.4} : {:.2} s, {} candidats, meilleur {:.1} km recouvrement {:.0} % sinuosité {:.2}",
                             dt,
@@ -260,14 +264,18 @@ fn main() -> Result<()> {
                 bail!("aucune boucle calculée");
             }
             let pct = |q: f64| temps[((temps.len() as f64 - 1.0) * q).round() as usize];
+            let n_ok = ecarts.len() as f64;
             println!(
-                "\n{} boucles de {:.0} km, {} échecs : médiane {:.2} s, p95 {:.2} s, max {:.2} s{}",
+                "\n{} boucles de {:.0} km, {} échecs : médiane {:.2} s, p95 {:.2} s, max {:.2} s ; écart de distance moyen {:+.1} % (|écart| {:.1} %), vitesse moyenne {:.0} km/h{}",
                 temps.len(),
                 distance_km,
                 echecs,
                 pct(0.5),
                 pct(0.95),
                 temps[temps.len() - 1],
+                ecarts.iter().sum::<f64>() / n_ok * 100.0,
+                ecarts.iter().map(|e| e.abs()).sum::<f64>() / n_ok * 100.0,
+                vitesses.iter().sum::<f64>() / n_ok,
                 if froid {
                     format!(
                         " ; octets chargés à froid : médiane {:.1} Mo",

@@ -7,17 +7,20 @@ use raido_format::{haversine_m, Classe, Point};
 use crate::osm::Localite;
 
 /// Vitesse de base à moto en balade, par classe de route (km/h).
+/// Valeurs provisoires (J1 donnait 40 à 50 km/h de moyenne en montagne, jugé
+/// pessimiste) ; la calibration sur les trajets GeoRide de l'utilisateur (spec O3)
+/// les remplacera.
 pub fn vitesse_classe(c: Classe) -> f64 {
     match c {
-        Classe::Autoroute => 110.0,
-        Classe::Nationale => 85.0,
-        Classe::Primaire => 75.0,
-        Classe::Secondaire => 70.0,
-        Classe::Tertiaire => 60.0,
-        Classe::NonClassee => 50.0,
-        Classe::Residentielle => 35.0,
-        Classe::Bretelle => 55.0,
-        Classe::Zone => 15.0,
+        Classe::Autoroute => 115.0,
+        Classe::Nationale => 90.0,
+        Classe::Primaire => 80.0,
+        Classe::Secondaire => 75.0,
+        Classe::Tertiaire => 65.0,
+        Classe::NonClassee => 55.0,
+        Classe::Residentielle => 40.0,
+        Classe::Bretelle => 60.0,
+        Classe::Zone => 20.0,
     }
 }
 
@@ -68,15 +71,15 @@ pub fn sinuosite(longueur_m: f64, virages_rad: f64) -> f64 {
 }
 
 /// Temps de parcours en décisecondes : vitesse de classe, bornée par `maxspeed`,
-/// ralentie par la sinuosité (jusqu'à −35 %) et par les ronds-points.
+/// ralentie par la sinuosité (jusqu'à −25 %) et par les ronds-points.
 pub fn temps_ds(longueur_m: f64, classe: Classe, maxspeed: Option<u16>, sinuosite: f64, rond_point: bool) -> u32 {
     let mut v = vitesse_classe(classe);
     if let Some(m) = maxspeed {
-        v = v.min(m as f64 * 0.95);
+        v = v.min(m as f64);
     }
-    v *= 1.0 - 0.35 * sinuosite;
+    v *= 1.0 - 0.25 * sinuosite;
     if rond_point {
-        v = v.min(25.0);
+        v = v.min(30.0);
     }
     let v_ms = v.max(5.0) / 3.6;
     ((longueur_m / v_ms) * 10.0).round().max(1.0) as u32
@@ -155,10 +158,10 @@ mod tests {
 
     #[test]
     fn temps_coherent() {
-        // 10 km de tertiaire droite à 60 km/h = 600 s = 6000 ds.
-        assert_eq!(temps_ds(10_000.0, Classe::Tertiaire, None, 0.0, false), 6_000);
-        assert!(temps_ds(10_000.0, Classe::Tertiaire, Some(50), 0.0, false) > 6_000);
-        assert!(temps_ds(10_000.0, Classe::Tertiaire, None, 1.0, false) > 6_000);
+        // 10 km de tertiaire droite à 65 km/h = 553,8 s = 5538 ds.
+        assert_eq!(temps_ds(10_000.0, Classe::Tertiaire, None, 0.0, false), 5_538);
+        assert!(temps_ds(10_000.0, Classe::Tertiaire, Some(50), 0.0, false) > 5_538);
+        assert!(temps_ds(10_000.0, Classe::Tertiaire, None, 1.0, false) > 5_538);
     }
 
     #[test]

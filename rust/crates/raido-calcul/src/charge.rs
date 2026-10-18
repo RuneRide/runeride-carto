@@ -150,8 +150,11 @@ impl Graphe {
     /// Les `k` nœuds les plus proches, par distance croissante.
     pub fn noeuds_proches(&self, lat: f64, lon: f64, max_m: f64, k: usize) -> Vec<(NoeudId, f64)> {
         let p = Point::depuis_degres(lat, lon);
-        let centre = cle_tuile(lat, lon);
-        let (cx, cy) = ((centre >> 8) as i32, (centre & 0xff) as i32);
+        let (cx, cy) = {
+            let (x, y) = raido_format::xy_de_cle(cle_tuile(lat, lon));
+            (x as i32, y as i32)
+        };
+        let n_tuiles = 1i32 << raido_format::ZOOM;
         let mut meilleurs: Vec<(NoeudId, f64)> = Vec::with_capacity(k + 1);
         // Pré-filtre rectangulaire en unités de 1e-7 degré : 1 m ≈ 90 unités en latitude.
         let dlat_u = (max_m * 1e7 / 111_000.0) as i64;
@@ -159,10 +162,10 @@ impl Graphe {
         for dx in -1..=1 {
             for dy in -1..=1 {
                 let (x, y) = (cx + dx, cy + dy);
-                if !(0..256).contains(&x) || !(0..256).contains(&y) {
+                if !(0..n_tuiles).contains(&x) || !(0..n_tuiles).contains(&y) {
                     continue;
                 }
-                let cle = (x as u32) << 8 | y as u32;
+                let cle = raido_format::cle_xy(x as u32, y as u32);
                 let Some(t) = self.tuile(cle) else { continue };
                 // Les tuiles voisines ne servent qu'aux points près d'un bord.
                 if (dx != 0 || dy != 0) && !proche_du_bord(cle, lat, lon, max_m) {
