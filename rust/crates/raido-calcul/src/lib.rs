@@ -11,3 +11,5 @@ pub mod boucle;
 pub mod charge;
 pub mod cout;
 pub mod geo;
+pub mod polyligne;
+pub mod requete;

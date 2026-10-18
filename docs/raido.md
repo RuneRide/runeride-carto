@@ -5,13 +5,14 @@ Statut : **jalon J1 de [runeride/docs/itineraire.md](../../runeride/docs/itinera
 
 ## 1. Ce qui existe
 
-Espace de travail Cargo `rust/` (même organisation que `runeride-weather/rust`), trois caisses sous EUPL-1.2 :
+Espace de travail Cargo `rust/` (même organisation que `runeride-weather/rust`), quatre caisses sous EUPL-1.2 :
 
 | Caisse | Rôle | Fichiers |
 |---|---|---|
 | `raido-format` | types des tuiles de graphe (`rkyv` 0.8), identifiants globaux, découpage z8, haversine, géohash | `crates/raido-format/src/lib.rs` |
 | `raido-graphe` | pipeline : lecture du PBF (`osmpbf`, deux passes parallèles), découpage aux intersections, scores, restrictions de tourner, composantes connexes, écriture des tuiles et de `index.json` | `osm.rs`, `scores.rs`, `construire.rs`, `main.rs` |
-| `raido-calcul` | moteur : chargement des tuiles à la demande (validation rkyv au chargement, accès zéro copie ensuite), fonction de coût, A\* par arcs avec restrictions et interdiction de demi-tour, boucles par pétales parallélisées (`rayon`), ligne de commande `trajet` / `balade` / `banc` | `charge.rs`, `cout.rs`, `astar.rs`, `boucle.rs`, `geo.rs`, `main.rs` |
+| `raido-calcul` | moteur : chargement des tuiles à la demande (source disque, S3 ou cache ; validation rkyv au chargement, accès zéro copie ensuite), fonction de coût, A\* par arcs avec restrictions et interdiction de demi-tour, boucles par pétales parallélisées (`rayon`), contrat JSON de l'API, ligne de commande `trajet` / `balade` / `banc` | `charge.rs`, `cout.rs`, `astar.rs`, `boucle.rs`, `geo.rs`, `requete.rs`, `polyligne.rs`, `main.rs` |
+| `raido-lambda` | fonction Lambda (§2.5) : source S3 signée, handler Function URL, binaire `bootstrap` | `crates/raido-lambda/`, `tools/package-lambda.sh` |
 
 Usage :
 
@@ -121,13 +122,48 @@ Trois changements après l'acceptation de J1, mêmes bancs (1 fil, mêmes graine
 
 Le gain de temps à 120 km (p95 de 4,0 à 2,9 s) vient surtout des tuiles plus petites (moins d'octets touchés, meilleure localité) ; le raffinement coûte ≈ 0,1 s. Les vitesses restent des valeurs a priori : seule la calibration GeoRide (spec O3) les rendra justes.
 
+## 2.5 Jalon J3 (18/10/2026 au soir) : fonction Lambda, S3, Terraform
+
+Rien n'est déployé : tout ce qui suit a été compilé et exercé **en local**, dont la source S3 contre un faux S3 qui vérifie la signature.
+
+### Ce qui existe
+
+| Élément | Fichier |
+|---|---|
+| Source de tuiles abstraite : disque, **cache `/tmp` devant une autre source** (fichier temporaire + `rename`) | `raido-calcul/src/charge.rs` (`SourceTuiles`, `SourceDisque`, `SourceCache`) |
+| Contrat JSON de `POST /v1/balade` et `/v1/trajet` (spec §7.2, sous-ensemble J3 : départ, retour ou arrivée, distance ou durée, préférences, évitements, tronçons connus, variante) ; réponse avec polyligne encodée, scores, avertissements, mesures ; erreurs 400 / 422 / 500 typées | `raido-calcul/src/requete.rs`, `polyligne.rs` |
+| Caisse **`raido-lambda`** : source S3 (`GetObject` SigV4 via `rw-aws` de runeride-weather, dépendance `git` épinglée sur `f981a47`), handler Function URL (format API Gateway v2, routes `GET /v1/sante`, `POST /v1/balade`, `POST /v1/trajet`, `OPTIONS`), journal JSON sur la sortie d'erreur, binaire `bootstrap` (`lambda_runtime`, Tokio `current_thread`, calcul en `spawn_blocking`) avec modes locaux `--requete` et `--evenement` | `crates/raido-lambda/` |
+| Emballage arm64 musl sans compilateur C (TLS en Rust pur, `rust-lld`) | `rust/tools/package-lambda.sh` |
+| Module Terraform `raido/` : S3 privé, Lambda arm64 + Function URL `AWS_IAM`, CloudFront avec **OAC de type `lambda`**, CORS, alarmes, budget, README | `runeride-cloud/terraform/raido/` |
+
+Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemin`), `RAIDO_BUCKET`, `RAIDO_PREFIXE` (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`), `RAIDO_S3_ENDPOINT` (tests), `RAIDO_THREADS`, `AWS_REGION` et les identifiants fournis par Lambda.
+
+### Mesures (locales)
+
+| Mesure | Valeur |
+|---|---|
+| Binaire `bootstrap` arm64 (`aarch64-unknown-linux-musl`, LTO, strippé) | **2,5 Mo** ; zip **1,3 Mo** |
+| Balade 180 min depuis Grenoble, source disque, 1 fil | 135 km, 3 h 11 avec pauses, 3,0 s de calcul, 15 tuiles (90 Mo) |
+| Idem, **source S3 (faux S3 local, SigV4 vérifiée)**, cache `/tmp` vide | chargement **204 ms** (16 `GET` signés), 3,25 s au total, 148 Mo de RSS |
+| Idem, cache `/tmp` chaud | chargement **54 ms**, aucune requête S3 |
+| Mauvaise signature | `403 SignatureDoesNotMatch` remonté dans le journal, réponse 500 propre |
+| Lyon → Grenoble (`/v1/trajet`) | 111 km, 0,14 s |
+| `terraform fmt` / `init -backend=false` / `validate` | succès, fournisseur aws 6.69.1 |
+
+### Ce qui n'est pas fait
+
+- **Aucun appel à AWS** : ni `plan`, ni `apply`, ni S3 réel. Le TLS en Rust pur face aux points de terminaison d'AWS n'est pas vérifié (test jetable de runeride-weather en attente).
+- **Vérification du jeton court** (JWT RS256 du PHP, spec §7.1) : absente ; l'API serait ouverte à qui connaît l'adresse CloudFront. À faire avant de rattacher le domaine.
+- Étapes, autonomie, météo, découverte par `troncons_url`, GPX, `/v1/lieu`, `/v1/apparier` : jalons suivants.
+- Le `POST` derrière un OAC Lambda exige l'en-tête `x-amz-content-sha256` côté client (README du module) : non exercé.
+
 ## 3. Ce qui n'a pas été fait, honnêtement
 
-- **Aucune mesure sur AWS** : ni Lambda, ni S3 (le chargement « à froid » est mesuré sur disque local, S3 en région ajoutera de l'ordre de 0,5 à 1 s pour 76 Mo : ESTIMATION). Ni packaging arm64.
+- **Aucune mesure sur AWS** : ni Lambda, ni S3 réel (le chargement « à froid » est mesuré sur disque local et sur un faux S3 en boucle locale, §2.5 ; S3 en région ajoutera de l'ordre de 0,5 à 1 s pour 54 Mo : ESTIMATION). Le packaging arm64 est fait (§2.5), pas exécuté sur arm64.
 - Scores **scénique** et **motard** à zéro, pas de relief (BD ALTI), pas de relations touristiques, pas de cols ni de panoramas.
 - Pas de graphe grossier pour les longs trajets (spec §5.3) : Lyon → Grenoble passe très bien sans, la question se posera pour des trajets > 300 km.
 - Restrictions avec pivot « way » ignorées (13 %) ; pas de ferries ; `access` conditionnel non lu ; pas de prise en compte de `maxweight`/`maxheight` (sans objet à moto).
 - Plausibilité des tracés : **validée par le titulaire le 18/10/2026** sur la visionneuse HTML (Leaflet + fond OSM) pour les boucles depuis Grenoble, Lyon et Annecy et le trajet Lyon → Grenoble ; pas encore de comparaison chiffrée avec des balades de référence (J2).
-- Pas d'étapes, d'autonomie carburant, de météo ni de découverte dans le moteur : ce sont les jalons J3, J5 et J6.
+- Pas d'étapes, d'autonomie carburant, de météo ni de découverte par référence S3 dans le moteur : jalons J4 à J6 (la découverte par `troncons_connus` dans le corps de la requête existe).
 - Pas de test d'intégration sur un graphe jouet (seulement 13 tests unitaires sur le format, l'extraction et les scores).
 - Une seule machine, un seul extrait, caches disque chauds pour les bancs « à chaud ».

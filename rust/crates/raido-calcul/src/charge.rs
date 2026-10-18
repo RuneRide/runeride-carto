@@ -16,20 +16,91 @@ use raido_format::{
 };
 use rkyv::util::AlignedVec;
 
+/// D'où viennent les fichiers du graphe (`index.json`, `tuiles/…`) : disque local, S3 (dans la Lambda)…
+/// Les chemins sont relatifs à la racine du graphe, tels que `chemin_tuile` les produit.
+pub trait SourceTuiles: Send + Sync {
+    /// `None` si le fichier n'existe pas.
+    fn lire(&self, chemin: &str) -> Result<Option<Vec<u8>>>;
+    fn nom(&self) -> String;
+}
+
+/// Dossier local.
+pub struct SourceDisque(pub PathBuf);
+
+impl SourceTuiles for SourceDisque {
+    fn lire(&self, chemin: &str) -> Result<Option<Vec<u8>>> {
+        match fs::read(self.0.join(chemin)) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).with_context(|| format!("lecture de {chemin}")),
+        }
+    }
+    fn nom(&self) -> String {
+        format!("disque:{}", self.0.display())
+    }
+}
+
+/// Cache disque devant une autre source (le `/tmp` d'une Lambda survit entre invocations d'un même
+/// environnement) : un fichier lu une fois est relu localement ensuite. Écriture par fichier temporaire + `rename`.
+pub struct SourceCache {
+    pub interne: Box<dyn SourceTuiles>,
+    pub dossier: PathBuf,
+    pub lectures_distantes: std::sync::atomic::AtomicU64,
+}
+
+impl SourceCache {
+    pub fn nouvelle(interne: Box<dyn SourceTuiles>, dossier: PathBuf) -> SourceCache {
+        SourceCache { interne, dossier, lectures_distantes: Default::default() }
+    }
+}
+
+impl SourceTuiles for SourceCache {
+    fn lire(&self, chemin: &str) -> Result<Option<Vec<u8>>> {
+        let local = self.dossier.join(chemin);
+        if let Ok(v) = fs::read(&local) {
+            return Ok(Some(v));
+        }
+        let Some(v) = self.interne.lire(chemin)? else { return Ok(None) };
+        self.lectures_distantes.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(parent) = local.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        let tmp = local.with_extension("partiel");
+        if fs::write(&tmp, &v).and_then(|_| fs::rename(&tmp, &local)).is_err() {
+            let _ = fs::remove_file(&tmp); // cache plein ou non inscriptible : on sert quand même
+        }
+        Ok(Some(v))
+    }
+    fn nom(&self) -> String {
+        format!("cache:{} devant {}", self.dossier.display(), self.interne.nom())
+    }
+}
+
 pub struct Graphe {
-    dossier: PathBuf,
+    source: Box<dyn SourceTuiles>,
     pub index: Index,
     tuiles: HashMap<CleTuile, AlignedVec>,
     pub octets_charges: u64,
 }
 
 impl Graphe {
+    /// Graphe lu dans un dossier local.
     pub fn ouvrir(dossier: &Path) -> Result<Graphe> {
-        let index: Index = serde_json::from_slice(&fs::read(dossier.join("index.json")).context("index.json")?)?;
+        Graphe::depuis_source(Box::new(SourceDisque(dossier.to_path_buf())))
+    }
+
+    /// Graphe lu dans une source quelconque ; `index.json` est lu et vérifié tout de suite.
+    pub fn depuis_source(source: Box<dyn SourceTuiles>) -> Result<Graphe> {
+        let octets = source.lire("index.json")?.ok_or_else(|| anyhow!("index.json absent dans {}", source.nom()))?;
+        let index: Index = serde_json::from_slice(&octets).context("index.json")?;
         if index.version_format != VERSION_FORMAT {
             return Err(anyhow!("format {} attendu, index en {}", VERSION_FORMAT, index.version_format));
         }
-        Ok(Graphe { dossier: dossier.to_path_buf(), index, tuiles: HashMap::new(), octets_charges: 0 })
+        Ok(Graphe { source, index, tuiles: HashMap::new(), octets_charges: 0 })
+    }
+
+    pub fn source(&self) -> &dyn SourceTuiles {
+        self.source.as_ref()
     }
 
     pub fn existe(&self, cle: CleTuile) -> bool {
@@ -44,7 +115,8 @@ impl Graphe {
         if !self.existe(cle) {
             return Ok(false);
         }
-        let octets = fs::read(self.dossier.join(chemin_tuile(cle))).with_context(|| format!("tuile {cle:#x}"))?;
+        let chemin = chemin_tuile(cle);
+        let octets = self.source.lire(&chemin)?.ok_or_else(|| anyhow!("tuile {chemin} listée dans l'index mais absente"))?;
         let mut v = AlignedVec::<16>::with_capacity(octets.len());
         v.extend_from_slice(&octets);
         rkyv::access::<ArchivedTuile, rkyv::rancor::Error>(&v).with_context(|| format!("tuile {cle:#x} invalide"))?;

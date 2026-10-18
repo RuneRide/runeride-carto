@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 [workspace]
 resolver = "2"
-members = ["crates/raido-format", "crates/raido-graphe", "crates/raido-calcul"]
+members = ["crates/raido-format", "crates/raido-graphe", "crates/raido-calcul", "crates/raido-lambda"]
 
 [workspace.package]
 edition = "2021"
