@@ -138,7 +138,7 @@ Rien n'est déployé : tout ce qui suit a été compilé et exercé **en local**
 
 Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemin`), `RAIDO_BUCKET`, `RAIDO_PREFIXE` (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`), `RAIDO_S3_ENDPOINT` (tests), `RAIDO_THREADS`, `AWS_REGION` et les identifiants fournis par Lambda ; jeton : `RAIDO_JETON` (`obligatoire` | `desactive`), `RAIDO_JWKS_URL` ou `RAIDO_JWKS_FICHIER`, `RAIDO_EMETTEUR`, `RAIDO_AUDIENCE`.
 
-**Jeton court** (`raido-lambda/src/jeton.rs`, spec §7.1) : JWT RS256 au format exact de la classe PHP `RuneRide\Auth\Jwt` (en-tête `kid` = 16 premiers hexadécimaux de sha256 du PEM public, JWKS `/.well-known/jwks.json`), vérifié avec la caisse `rsa` 0.9 (Rust pur). Revendications : `iss`, `aud` = `raido` (les jetons de session `aud = runeride` sont refusés), `sub` (jamais journalisé), `iat`, `exp` (tolérance 60 s), `palier` (`gratuit` | `abonne`), `type` (`petite_boucle` | `grand`), `limite_km` (défaut 25). Application : `petite_boucle` → `/v1/balade` seul et distance cible ≤ `limite_km`, sinon `403 quota_requis` ; `palier` ≠ `abonne` et découverte demandée → `403 abonnement_requis` ; jeton absent → `401 jeton_requis` ; invalide → `401 jeton_invalide`. Le JWKS est lu au démarrage et rechargé sur `kid` inconnu (au plus toutes les 5 min). La **délivrance** (`POST /api/balade/jeton`, PHP) est à écrire en J4.
+**Jeton court** (`raido-lambda/src/jeton.rs`, spec §7.1) : JWT RS256 au format exact de la classe PHP `RuneRide\Auth\Jwt` (en-tête `kid` = 16 premiers hexadécimaux de sha256 du PEM public, JWKS `/.well-known/jwks.json`), vérifié avec la caisse `rsa` 0.9 (Rust pur). Revendications : `iss`, `aud` = `raido` (les jetons de session `aud = runeride` sont refusés), `sub` (jamais journalisé), `iat`, `exp` (tolérance 60 s), `palier` (`gratuit` | `abonne`), `type` (`petite_boucle` | `grand`), `limite_km` (défaut 25). Application : `petite_boucle` → `/v1/balade` seul et distance cible ≤ `limite_km`, sinon `403 quota_requis` ; `palier` ≠ `abonne` et découverte demandée → `403 abonnement_requis` ; jeton absent → `401 jeton_requis` ; invalide → `401 jeton_invalide`. Le JWKS est lu au démarrage et rechargé sur `kid` inconnu (au plus toutes les 5 min). La **délivrance** (`POST /api/balade/jeton`, PHP) est faite depuis le 19/10/2026 : §2.6.
 
 ### Mesures (locales)
 
@@ -155,9 +155,70 @@ Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemi
 ### Ce qui n'est pas fait
 
 - **Aucun appel à AWS** : ni `plan`, ni `apply`, ni S3 réel. Le TLS en Rust pur face aux points de terminaison d'AWS n'est pas vérifié (test jetable de runeride-weather en attente).
-- **Délivrance du jeton court** côté PHP (`POST /api/balade/jeton`, quotas) : absente ; la vérification côté Lambda existe et a été exercée de bout en bout avec une clé `openssl` et des jetons signés au format du PHP (abonné accepté, jeton de session refusé, petite boucle bornée à 25 km, trajet et découverte refusés en gratuit).
+- ~~Délivrance du jeton court côté PHP~~ : faite le 19/10/2026 (§2.6), chaîne PHP → Lambda exercée en local avec la vraie classe `Jwt`.
 - Étapes, autonomie, météo, découverte par `troncons_url`, GPX, `/v1/lieu`, `/v1/apparier` : jalons suivants.
 - Le `POST` derrière un OAC Lambda exige l'en-tête `x-amz-content-sha256` côté client (README du module) : non exercé.
+
+## 2.6 Jalon J4, côté PHP (19/10/2026) : délivrance du jeton, quotas, balades enregistrées
+
+Fait dans `runeride` (PR #9 et #11, fusionnées sur `main`), spec §6.4, §7.1 et §7.3. Rien de déployé : les migrations
+011 et 014 se jouent à la main en production comme les précédentes.
+
+| Route (`app.runeride.fr`, Bearer de session) | Rôle |
+|---|---|
+| `POST /api/balade/jeton` `{"type": "petite_boucle" \| "grand"}` | jeton court **RS256** signé par la même clé que les sessions (`Jwt::issueFor()`), `aud = raido`, `iss = RUNERIDE_BASE_URL`, `exp` 15 min, `sub` opaque (`u` + 24 hexadécimaux de SHA-256, jamais l'identifiant du compte), revendications `palier`, `type`, `limite_km` (25). Un **grand** calcul est décompté à la délivrance pour un compte gratuit : **3 par mois civil** (`403 quota_epuise` ensuite ; `UPDATE` conditionnel, atomique), jamais pour un abonné. Réponse : `jeton`, `expire_a`, `raido_url` (`RUNERIDE_RAIDO_URL`, vide tant que rien n'est déployé), restant du mois |
+| `GET /api/balade/quota` | restant du mois, pour l'affichage |
+| `GET /api/balades`, `GET /api/balade?id=`, `POST /api/balades`, `DELETE /api/balades?id=` | balades enregistrées (migration 011 : `params_json` = requête §7.2, `trace_json` = polyligne encodée, mesures, scores, version du graphe) ; **5 en gratuit** (`403 abonnement_requis`), illimité en abonné |
+| `PUT /api/balade/partage {id}`, `DELETE /api/balade/partage?id=` | crée (clé aléatoire stable) ou révoque le lien public |
+| `GET /api/balade/partage?cle=` (sans jeton) | titre, tracé, mesures, scores, date, `attribution` ; ni compte ni paramètres de calcul |
+
+Variables du `.env` (toutes avec valeur par défaut) : `RUNERIDE_RAIDO_AUDIENCE` (`raido`), `RUNERIDE_RAIDO_JETON_TTL` (900),
+`RUNERIDE_RAIDO_URL`, `RUNERIDE_BALADE_LIMITE_KM` (25), `RUNERIDE_BALADE_GRANDS_PAR_MOIS` (3), `RUNERIDE_BALADE_ENREGISTREES_GRATUIT` (5).
+Côté fonction, `RAIDO_EMETTEUR` doit valoir le `RUNERIDE_BASE_URL` du PHP (`https://app.runeride.fr`, défaut du module Terraform) et `RAIDO_JWKS_URL` son `/.well-known/jwks.json`.
+La constante d'attribution est identique dans `BaladeApi::ATTRIBUTION` et `raido_calcul::requete::ATTRIBUTION`.
+
+### Essai de bout en bout, sans AWS
+
+`rust/tools/essai-jeton-local.sh <runeride/web> <dossier du graphe>` : la classe PHP `Jwt` de `runeride` engendre une
+clé jetable, publie son JWKS et signe six jetons exactement comme `BaladeApi::token()` ; `bootstrap --evenement` rejoue
+13 événements Function URL avec `RAIDO_JETON=obligatoire` et `RAIDO_JWKS_FICHIER`. Rejoué le 19/10/2026 sur le graphe
+Rhône-Alpes z9 (25 tuiles), départ Grenoble, 4 fils ; les 13 statuts sont ceux attendus (`essai-jeton/cas.py`) :
+
+| Cas | Statut | Code | Détail |
+|---|---|---|---|
+| `01_sante_sans_jeton` | 200 | | `GET /v1/sante` reste public |
+| `02_balade_sans_jeton` | 401 | `jeton_requis` | |
+| `03_session_runeride` | 401 | `jeton_invalide` | jeton de session (`aud = runeride`) refusé |
+| `04_expire` | 401 | `jeton_invalide` | expiré depuis 59 min |
+| `05_autre_cle` | 401 | `jeton_invalide` | `kid` inconnu du JWKS |
+| `06_gratuit_petite_20km` | 200 | | 22,2 km, 79 ms |
+| `07_gratuit_petite_40km` | 403 | `quota_requis` | distance > `limite_km` |
+| `08_gratuit_petite_180min` | 403 | `quota_requis` | durée qui implique > 25 km |
+| `09_gratuit_petite_trajet` | 403 | `quota_requis` | `/v1/trajet` interdit en petite boucle |
+| `10_gratuit_grand_120km` | 200 | | 105,8 km, 440 ms |
+| `11_gratuit_grand_decouverte` | 403 | `abonnement_requis` | découverte en gratuit |
+| `12_abonne_grand_decouverte` | 200 | | 58,8 km, 259 ms |
+| `13_abonne_trajet` | 200 | | Grenoble → Lyon 105,0 km, 81 ms |
+
+**Écart avec la spec §6.4 à trancher** (« n'est pas consommé si le calcul échoue ») : le PHP décompte à la délivrance
+et ne sait pas si le calcul a abouti ; Raido est sans état et n'appelle pas le PHP. Un remboursement sur déclaration du
+client serait contournable (quota illimité). Deux issues : accepter l'écart en v1 (la PWA vérifie les bornes avant de
+demander le jeton, un `422 calcul_impossible` reste rare), ou faire remonter l'échec par Raido (appel sortant signé
+vers le PHP), hors v1. Non tranché au 19/10/2026.
+
+Ce que cet essai ne montre pas : le téléchargement du JWKS par HTTPS (`RAIDO_JWKS_URL`, pile TLS en Rust pur, non
+exercée contre un vrai serveur), le `POST` derrière CloudFront (`x-amz-content-sha256`), les temps réels sur arm64.
+
+### Plan d'essai sur AWS (à faire, chaque étape sur accord explicite, rien d'exécuté au 19/10/2026)
+
+1. `rust/tools/package-lambda.sh` (zip arm64) et `raido-graphe construire` sur l'extrait ; `terraform plan` du module
+   `runeride-cloud/terraform/raido/` avec `jeton_emetteur = https://app.runeride.fr` (lire le plan : première fois).
+2. `terraform apply` sans le domaine, `publier_graphe`, `GET /v1/sante` sur l'adresse CloudFront : vérifie le TLS vers
+   S3 **et** le chargement du JWKS depuis `app.runeride.fr` (journal `{"evenement":"jwks","cles":1}`).
+3. Depuis un compte RuneRide de test : `POST /api/balade/jeton` puis le `POST /v1/balade` du README du module avec
+   `x-amz-content-sha256` ; rejouer les cas 06, 07 et 11 ci-dessus.
+4. Mesurer démarrage à froid, `MaxMemoryUsed`, coût sur deux semaines ; comparer aux ESTIMATIONS de la spec §5.5.
+5. Seulement ensuite : `certificat_valide = true`, CNAME `raido`, `RUNERIDE_RAIDO_URL` dans le `.env` de production.
 
 ## 3. Ce qui n'a pas été fait, honnêtement
 
@@ -166,6 +227,6 @@ Variables d'environnement de la fonction : `RAIDO_SOURCE` (`s3` ou `local:/chemi
 - Pas de graphe grossier pour les longs trajets (spec §5.3) : Lyon → Grenoble passe très bien sans, la question se posera pour des trajets > 300 km.
 - Restrictions avec pivot « way » ignorées (13 %) ; pas de ferries ; `access` conditionnel non lu ; pas de prise en compte de `maxweight`/`maxheight` (sans objet à moto).
 - Plausibilité des tracés : **validée par le titulaire le 18/10/2026** sur la visionneuse HTML (Leaflet + fond OSM) pour les boucles depuis Grenoble, Lyon et Annecy et le trajet Lyon → Grenoble ; pas encore de comparaison chiffrée avec des balades de référence (J2).
-- Pas d'étapes, d'autonomie carburant, de météo ni de découverte par référence S3 dans le moteur : jalons J4 à J6 (la découverte par `troncons_connus` dans le corps de la requête existe).
+- Pas d'étapes, d'autonomie carburant, de météo ni de découverte par référence S3 dans le moteur : jalons J4 à J6 (la découverte par `troncons_connus` dans le corps de la requête existe). Côté PHP, J4 a livré le jeton, les quotas et les balades enregistrées (§2.6) ; la vue PWA `#/balade` reste à faire.
 - Pas de test d'intégration sur un graphe jouet (seulement 13 tests unitaires sur le format, l'extraction et les scores).
 - Une seule machine, un seul extrait, caches disque chauds pour les bancs « à chaud ».
