@@ -6,22 +6,9 @@ use raido_format::{haversine_m, Classe, Point};
 
 use crate::osm::Localite;
 
-/// Vitesse de base à moto en balade, par classe de route (km/h).
-/// Valeurs provisoires (J1 donnait 40 à 50 km/h de moyenne en montagne, jugé
-/// pessimiste) ; la calibration sur les trajets GeoRide de l'utilisateur (spec O3)
-/// les remplacera.
+/// Vitesse de base à moto en balade, par classe de route (km/h) : table de `raido_format::Classe`.
 pub fn vitesse_classe(c: Classe) -> f64 {
-    match c {
-        Classe::Autoroute => 115.0,
-        Classe::Nationale => 90.0,
-        Classe::Primaire => 80.0,
-        Classe::Secondaire => 75.0,
-        Classe::Tertiaire => 65.0,
-        Classe::NonClassee => 55.0,
-        Classe::Residentielle => 40.0,
-        Classe::Bretelle => 60.0,
-        Classe::Zone => 20.0,
-    }
+    c.vitesse_defaut_kmh()
 }
 
 /// Longueur (m) et somme des changements de cap (rad) d'une polyligne.

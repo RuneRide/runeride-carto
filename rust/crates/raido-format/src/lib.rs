@@ -85,6 +85,36 @@ pub enum Classe {
 }
 
 impl Classe {
+    /// Vitesse de base à moto en balade, par classe de route (km/h). Valeurs provisoires (J1 donnait 40 à 50 km/h de
+    /// moyenne en montagne, jugé pessimiste) ; la calibration sur les trajets GeoRide (spec O3) les remplacera.
+    pub fn vitesse_defaut_kmh(self) -> f64 {
+        match self {
+            Classe::Autoroute => 115.0,
+            Classe::Nationale => 90.0,
+            Classe::Primaire => 80.0,
+            Classe::Secondaire => 75.0,
+            Classe::Tertiaire => 65.0,
+            Classe::NonClassee => 55.0,
+            Classe::Residentielle => 40.0,
+            Classe::Bretelle => 60.0,
+            Classe::Zone => 20.0,
+        }
+    }
+
+    /// Classe réglable par l'utilisateur (nom de l'API : `secondaire`, `non_classee`…). Bretelles et zones ne le sont pas.
+    pub fn depuis_nom(nom: &str) -> Option<Classe> {
+        Some(match nom {
+            "autoroute" => Classe::Autoroute,
+            "nationale" => Classe::Nationale,
+            "primaire" => Classe::Primaire,
+            "secondaire" => Classe::Secondaire,
+            "tertiaire" => Classe::Tertiaire,
+            "non_classee" => Classe::NonClassee,
+            "residentielle" => Classe::Residentielle,
+            _ => return None,
+        })
+    }
+
     pub fn depuis_u8(v: u8) -> Classe {
         match v {
             0 => Classe::Autoroute,
