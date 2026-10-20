@@ -6,6 +6,7 @@
 //! `boucle` fabrique des balades par pétales.  Aucune dépendance au réseau ici :
 //! le chargement S3 viendra avec la Lambda (jalon J3).
 
+pub mod apparier;
 pub mod astar;
 pub mod boucle;
 pub mod charge;
