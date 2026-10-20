@@ -11,7 +11,7 @@ use clap::{Args, Parser, Subcommand};
 use raido_calcul::boucle::{self, ParametresBoucle};
 use raido_calcul::charge::Graphe;
 use raido_calcul::cout::Preferences;
-use raido_calcul::{astar, geo};
+use raido_calcul::{apparier, astar, geo};
 
 #[derive(Parser)]
 #[command(about = "Moteur de balade Raido (PoC J1)")]
@@ -93,6 +93,19 @@ enum Commande {
         prefs: Prefs,
     },
     /// Banc d'essai : N boucles depuis des départs tirés au sort dans l'emprise du graphe.
+    /// Banc de l'appariement : boucles calculées sur le graphe, bruitées comme un GPS, puis rattachées au réseau ;
+    /// compare les tronçons retrouvés à ceux réellement parcourus (rappel pondéré par la longueur, précision).
+    Apparier {
+        #[arg(long, default_value_t = 20)]
+        n: usize,
+        #[arg(long, default_value_t = 60.0)]
+        distance_km: f64,
+        #[arg(long, default_value_t = 1)]
+        graine: u64,
+        /// Écart-type du bruit gaussien ajouté à chaque point, en mètres.
+        #[arg(long, default_value_t = 8.0)]
+        bruit_m: f64,
+    },
     Banc {
         #[arg(long, default_value_t = 20)]
         n: usize,
@@ -207,6 +220,72 @@ fn main() -> Result<()> {
             if let Some(f) = &prefs.geojson {
                 geojson(f, &traces)?;
             }
+        }
+        Commande::Apparier { n, distance_km, graine, bruit_m } => {
+            let b = g.index.bornes;
+            let mut alea = geo::Alea::nouveau(graine);
+            let p = Preferences::balade();
+            let dist = distance_km * 1000.0;
+            let (mut rappels, mut precisions, mut couvertures, mut temps) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            let mut essais = 0;
+            while rappels.len() < n && essais < n * 6 {
+                essais += 1;
+                let lat = b[0] + (b[2] - b[0]) * (0.15 + 0.7 * alea.reel());
+                let lon = b[1] + (b[3] - b[1]) * (0.15 + 0.7 * alea.reel());
+                g.precharger(boucle::emprise(lat, lon, dist))?;
+                let Some(nd) = boucle::noeud_accroche(&g, &p, lat, lon, 3_000.0) else { continue };
+                let mut pb = ParametresBoucle::pour(dist);
+                pb.epsilon = 1.0;
+                let Some(c) = boucle::balade(&g, &p, nd, &pb)?.into_iter().next() else { continue };
+                // Vérité : tronçons (way, segment) des arcs de la boucle, avec leur longueur.
+                let mut verite: std::collections::HashMap<(i64, u16), u64> = std::collections::HashMap::new();
+                for &id in &c.arcs {
+                    if let Some(a) = g.arc(id) {
+                        *verite.entry((a.way_id.to_native(), a.segment.to_native())).or_default() += a.longueur_m.to_native() as u64;
+                    }
+                }
+                // Trace bruitée (Box-Muller), comme un GPS : même chemin, positions décalées.
+                let bruit = |alea: &mut geo::Alea| {
+                    let (u1, u2) = (alea.reel().max(1e-12), alea.reel());
+                    let r = (-2.0 * u1.ln()).sqrt() * bruit_m;
+                    (r * (2.0 * std::f64::consts::PI * u2).cos(), r * (2.0 * std::f64::consts::PI * u2).sin())
+                };
+                let trace: Vec<(f64, f64)> = astar::trace(&g, &c.arcs, nd)
+                    .into_iter()
+                    .map(|(la, lo)| {
+                        let (dx, dy) = bruit(&mut alea);
+                        (la + dy / 110_540.0, lo + dx / (111_320.0 * la.to_radians().cos()))
+                    })
+                    .collect();
+                let t0 = Instant::now();
+                let r = apparier::apparier(&mut g, &trace)?;
+                temps.push(t0.elapsed().as_secs_f64());
+                let trouves: std::collections::HashSet<(i64, u16)> = r.troncons.iter().copied().collect();
+                let total_m: u64 = verite.values().sum();
+                let juste_m: u64 = verite.iter().filter(|(k, _)| trouves.contains(k)).map(|(_, l)| l).sum();
+                let bons = trouves.iter().filter(|k| verite.contains_key(k)).count();
+                rappels.push(juste_m as f64 / total_m.max(1) as f64);
+                precisions.push(bons as f64 / trouves.len().max(1) as f64);
+                couvertures.push(r.couverture);
+                println!(
+                    "{lat:.4},{lon:.4} : {:.1} km, {} points, rappel {:.1} %, précision {:.1} %, couverture {:.0} %, {:.2} s",
+                    c.longueur_m as f64 / 1000.0,
+                    r.points,
+                    rappels.last().unwrap() * 100.0,
+                    precisions.last().unwrap() * 100.0,
+                    r.couverture * 100.0,
+                    temps.last().unwrap()
+                );
+            }
+            if rappels.is_empty() {
+                bail!("aucune boucle calculée");
+            }
+            let moy = |v: &[f64]| v.iter().sum::<f64>() / v.len() as f64;
+            let min = |v: &[f64]| v.iter().cloned().fold(f64::INFINITY, f64::min);
+            println!(
+                "\n{} boucles de {:.0} km, bruit {:.0} m : rappel moyen {:.1} % (min {:.1} %), précision moyenne {:.1} % (min {:.1} %), couverture moyenne {:.1} %, {:.2} s par trace",
+                rappels.len(), distance_km, bruit_m, moy(&rappels) * 100.0, min(&rappels) * 100.0, moy(&precisions) * 100.0, min(&precisions) * 100.0, moy(&couvertures) * 100.0, moy(&temps)
+            );
         }
         Commande::Banc { n, distance_km, graine, froid, epsilon, fils } => {
             if let Some(f) = fils {

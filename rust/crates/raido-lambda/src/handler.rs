@@ -11,6 +11,7 @@ use std::sync::Mutex;
 
 use anyhow::{anyhow, Context, Result};
 use raido_calcul::charge::{Graphe, SourceCache, SourceDisque, SourceTuiles};
+use raido_calcul::apparier;
 use raido_calcul::requete::{self, Requete};
 use serde_json::{json, Value};
 
@@ -23,6 +24,8 @@ pub struct Contexte {
     pub version_binaire: &'static str,
     /// `None` : vérification désactivée (`RAIDO_JETON=desactive`, tests locaux seulement).
     pub verificateur: Option<Verificateur>,
+    /// Clé de service de `POST /v1/apparier` (`RAIDO_CLE_SERVICE`) ; absente : la route n'existe pas.
+    pub cle_service: Option<String>,
 }
 
 /// Journal JSON sur la sortie d'erreur (CloudWatch Logs la capture comme la sortie standard), une ligne
@@ -39,7 +42,7 @@ impl Contexte {
     /// (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`, vide pour désactiver), `RAIDO_S3_ENDPOINT` (tests),
     /// `RAIDO_THREADS`, `AWS_REGION` ; jeton : `RAIDO_JETON` (`obligatoire`, défaut, ou `desactive`),
     /// `RAIDO_JWKS_URL` (défaut `https://app.runeride.fr/.well-known/jwks.json`) ou `RAIDO_JWKS_FICHIER`,
-    /// `RAIDO_EMETTEUR` (`https://app.runeride.fr`), `RAIDO_AUDIENCE` (`raido`).
+    /// `RAIDO_EMETTEUR` (`https://app.runeride.fr`), `RAIDO_AUDIENCE` (`raido`) ; `RAIDO_CLE_SERVICE` (clé de `/v1/apparier`).
     pub fn depuis_env() -> Result<Contexte> {
         let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
         let verificateur = if var("RAIDO_JETON").as_deref() == Some("desactive") {
@@ -81,7 +84,7 @@ impl Contexte {
         let source_nom = source.nom();
         let graphe = Graphe::depuis_source(source).context("ouverture du graphe")?;
         journal("INFO", json!({"evenement": "demarrage", "source": source_nom, "graphe": graphe.index.construit_le, "tuiles": graphe.index.tuiles.len()}));
-        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION"), verificateur })
+        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION"), verificateur, cle_service: var("RAIDO_CLE_SERVICE") })
     }
 }
 
@@ -91,6 +94,17 @@ fn jeton_de(evt: &Value) -> Option<&str> {
     let a = entetes.iter().find(|(k, _)| k.eq_ignore_ascii_case("authorization"))?.1.as_str()?;
     let (schema, valeur) = a.split_once(' ')?;
     schema.eq_ignore_ascii_case("bearer").then(|| valeur.trim())
+}
+
+/// Corps de `POST /v1/apparier` : `trace` = suite de `[lat, lon]` en degrés.
+#[derive(serde::Deserialize)]
+struct DemandeApparier {
+    trace: Vec<[f64; 2]>,
+}
+
+/// Comparaison de clés sans fuite par le temps de calcul.
+fn egal_temps_constant(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |r, (x, y)| r | (x ^ y)) == 0
 }
 
 fn reponse(statut: u16, corps: Value) -> Value {
@@ -193,6 +207,27 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                 }
             }
         }
+        // Privée : appelée par le PHP de app.runeride.fr (jamais par le navigateur), avec la clé de service.
+        ("POST", "/v1/apparier") => match ctx.cle_service.as_deref() {
+            None => erreur(404, "route inconnue", "route_inconnue"),
+            Some(cle) => {
+                let fournie = evt.get("headers").and_then(Value::as_object).and_then(|h| h.iter().find(|(k, _)| k.eq_ignore_ascii_case("x-cle-service"))).and_then(|(_, v)| v.as_str()).unwrap_or("");
+                if !egal_temps_constant(fournie.as_bytes(), cle.as_bytes()) {
+                    return erreur(401, "clé de service absente ou invalide", "cle_invalide");
+                }
+                match corps(evt).and_then(|c| serde_json::from_slice::<DemandeApparier>(&c).context("JSON de la requête")) {
+                    Err(e) => erreur(400, &format!("requête illisible : {e}"), "requete_invalide"),
+                    Ok(d) => {
+                        let trace: Vec<(f64, f64)> = d.trace.iter().map(|p| (p[0], p[1])).collect();
+                        let mut g = ctx.graphe.lock().unwrap_or_else(|e| e.into_inner());
+                        match apparier::apparier(&mut g, &trace) {
+                            Ok(r) => reponse(200, json!({"troncons": r.troncons, "couverture": r.couverture, "points": r.points, "points_apparies": r.points_apparies, "graphe": {"version": g.index.construit_le}})),
+                            Err(e) => erreur(422, &e.to_string(), "apparier_impossible"),
+                        }
+                    }
+                }
+            }
+        },
         ("OPTIONS", _) => json!({"statusCode": 204, "headers": {}, "body": ""}),
         _ => erreur(404, "route inconnue", "route_inconnue"),
     };
@@ -203,6 +238,14 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cles_comparees_a_temps_constant() {
+        assert!(egal_temps_constant(b"secret", b"secret"));
+        assert!(!egal_temps_constant(b"secret", b"secreT"));
+        assert!(!egal_temps_constant(b"secret", b"secre"));
+        assert!(!egal_temps_constant(b"", b"x"));
+    }
 
     #[test]
     fn base64() {

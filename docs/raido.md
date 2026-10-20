@@ -197,6 +197,38 @@ Mesuré sur le graphe Rhône-Alpes, boucle de 60 km depuis Grenoble, mêmes pré
 | `pause_min_par_h` = 0 | 60,3 km | 4 555 s |
 | `pause_min_par_h` = 30 | 60,3 km | 6 833 s |
 
+### Appariement des tracés au réseau, `POST /v1/apparier` (20/10/2026)
+
+Rattache un tracé GPS aux tronçons du graphe, pour remplir `trajets_troncons` (migration 012) et alimenter la découverte (spec §4.4).
+Module `raido-calcul/src/apparier.rs` : le tracé est échantillonné (un point tous les 15 m au plus), chaque point retient les
+tronçons à moins de **50 m**, puis un Viterbi choisit la suite la plus plausible (coût = distance² à σ = 15 m ; même tronçon 0,
+tronçon voisin 0,5, tronçon éloigné 3). Un tronçon effleuré par un seul point n'est pas retenu.
+
+| | |
+|---|---|
+| Entrée | `{"trace": [[lat, lon], …]}` (au moins deux points distants de 15 m ; 60 000 points échantillonnés et 600 km d'emprise au plus) |
+| Sortie | `troncons` `[[way_id, segment], …]` triés et distincts, `couverture` (0 à 1), `points`, `points_apparies`, `graphe.version` |
+| Accès | **privé** : en-tête `x-cle-service` égal à `RAIDO_CLE_SERVICE` (comparaison à temps constant). Variable absente : la route n'existe pas (404). Clé fausse : 401 `cle_invalide`. Trace invalide : 422 `apparier_impossible` |
+
+Le PHP stocke la réponse avec la `graphe.version` reçue : les identifiants ne sont comparables que pour une même version.
+Ni la route ni le secret ne sont dans le module Terraform : `RAIDO_CLE_SERVICE` doit venir d'un secret (Secrets Manager),
+décision à prendre avant le premier `apply`.
+
+**Mesuré** (`raido-calcul -g <graphe> apparier`) : boucles de 60 km calculées sur Rhône-Alpes, rejouées avec un bruit gaussien
+sur chaque point, comparées aux tronçons réellement empruntés (rappel pondéré par la longueur) ; 12 boucles par ligne.
+
+| Bruit GPS (σ) | Rappel | Précision | Couverture | Temps par trace |
+|---|---|---|---|---|
+| 3 m | 92,0 % | 99,6 % | 99,6 % | 0,05 s |
+| 8 m | 92,9 % | 98,3 % | 99,7 % | 0,06 s |
+| 20 m | 92,3 % | 85,3 % | 98,8 % | 0,07 s |
+
+Le rappel plafonne vers 92 % quel que soit le bruit : ce sont surtout des tronçons très courts (raccords, ronds-points) que le
+filtre « au moins deux points » écarte ; ils pèsent peu pour la découverte. **Limites** : la vérité de l'essai vient du même
+graphe que l'appariement (tracés idéaux hors bruit) ; **aucun tracé GeoRide réel** n'a été apparié (rien de tel sur ce poste) ;
+tronçons de plus de 1,5 km sans intersection vus seulement si un de leurs nœuds est proche ; pas d'horodatage ni de vitesse.
+L'appel après `POST /api/georide/synchronisation` (PHP) reste à écrire.
+
 ### Essai de bout en bout, sans AWS
 
 `rust/tools/essai-jeton-local.sh <runeride/web> <dossier du graphe>` : la classe PHP `Jwt` de `runeride` engendre une
