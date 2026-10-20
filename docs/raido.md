@@ -177,6 +177,26 @@ Variables du `.env` (toutes avec valeur par défaut) : `RUNERIDE_RAIDO_AUDIENCE`
 Côté fonction, `RAIDO_EMETTEUR` doit valoir le `RUNERIDE_BASE_URL` du PHP (`https://app.runeride.fr`, défaut du module Terraform) et `RAIDO_JWKS_URL` son `/.well-known/jwks.json`.
 La constante d'attribution est identique dans `BaladeApi::ATTRIBUTION` et `raido_calcul::requete::ATTRIBUTION`.
 
+### Préférences du Compte lues par le moteur (19/10/2026 au soir)
+
+`POST /v1/balade` et `/v1/trajet` acceptent `vitesses` (objet classe → km/h, classes `autoroute`, `nationale`, `primaire`,
+`secondaire`, `tertiaire`, `non_classee`, `residentielle`, 20 à 130 km/h) et `pause_min_par_h` (0 à 30, défaut 10), les
+valeurs que la PWA lit dans `GET /api/balade/preferences`. Le temps de chaque arc est multiplié par
+`vitesse du graphe ÷ vitesse réglée` (`Preferences::echelle_temps`), dans le **coût** comme dans la **durée rendue** ; la pause
+sert aussi à convertir une durée demandée en distance. Les vitesses réglées sont **ramenées à 110 km/h** : c'est ce qui garde
+le temps à vol d'oiseau à 110 km/h admissible pour A\*. Limite : le plafond `maxspeed` déjà appliqué dans le temps de base du
+graphe n'est pas relevé (réglage à la hausse sur une route limitée : sans effet), et la conversion durée → distance reste à 55 km/h.
+Les seuils météo ne sont pas lus (météo : jalon J5). Classe inconnue ou valeur hors bornes : `422 calcul_impossible`.
+
+Mesuré sur le graphe Rhône-Alpes, boucle de 60 km depuis Grenoble, mêmes préférences de caractère :
+
+| Requête | Distance | Durée rendue |
+|---|---|---|
+| défauts | 60,3 km | 5 314 s |
+| vitesses réduites (nationale 45 … résidentielle 20 km/h) | 60,5 km | 8 956 s |
+| `pause_min_par_h` = 0 | 60,3 km | 4 555 s |
+| `pause_min_par_h` = 30 | 60,3 km | 6 833 s |
+
 ### Essai de bout en bout, sans AWS
 
 `rust/tools/essai-jeton-local.sh <runeride/web> <dossier du graphe>` : la classe PHP `Jwt` de `runeride` engendre une

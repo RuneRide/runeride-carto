@@ -68,6 +68,7 @@ impl Prefs {
             eviter_non_revetu: !self.non_revetu,
             eviter_tunnels: false,
             troncons_connus: HashSet::new(),
+            vitesses: Vec::new(),
         }
     }
 }

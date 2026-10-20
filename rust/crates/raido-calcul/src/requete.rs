@@ -3,17 +3,17 @@
 //! de commande et la Lambda. J3 : départ, retour ou arrivée, distance ou durée, préférences,
 //! évitements, tronçons connus, variante. Étapes, autonomie et météo viennent aux jalons suivants.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::time::Instant;
 
 use anyhow::{bail, Result};
-use raido_format::{haversine_m, Point};
+use raido_format::{haversine_m, Classe, Point};
 use serde::{Deserialize, Serialize};
 
 use crate::astar;
 use crate::boucle::{self, ParametresBoucle};
 use crate::charge::Graphe;
-use crate::cout::Preferences;
+use crate::cout::{Preferences, V_MAX_MS};
 use crate::{geo, polyligne};
 
 pub const ATTRIBUTION: &str = "© OpenStreetMap contributors (ODbL) · © IGN BD ALTI · Météo-France (Licence Ouverte) · Copernicus GLO-30";
@@ -67,6 +67,12 @@ pub struct Requete {
     pub variante: usize,
     /// Pondération de l'heuristique (1 = exact).
     pub epsilon: Option<f64>,
+    /// Vitesses moyennes réglées par l'utilisateur (km/h, 20 à 130, ramenées à 110 pour garder l'heuristique admissible),
+    /// par classe : `autoroute`, `nationale`, `primaire`, `secondaire`, `tertiaire`, `non_classee`, `residentielle`.
+    #[serde(default)]
+    pub vitesses: BTreeMap<String, f64>,
+    /// Pause par heure de route, en minutes (0 à 30, défaut 10 : spec O3).
+    pub pause_min_par_h: Option<f64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -113,8 +119,6 @@ pub struct Mesures {
 /// Vitesse de croisière (km/h) utilisée pour convertir une durée demandée en distance
 /// cible avant calcul ; la durée rendue est celle du graphe (vitesses par classe + pauses).
 const VITESSE_CIBLE_KMH: f64 = 55.0;
-/// Pause ajoutée à la durée rendue : 10 min par heure roulée (spec O3).
-const PAUSE_PAR_HEURE: f64 = 10.0 / 60.0;
 
 impl Requete {
     pub fn preferences(&self) -> Preferences {
@@ -130,7 +134,13 @@ impl Requete {
             eviter_non_revetu: ev("non_revetu"),
             eviter_tunnels: ev("tunnels"),
             troncons_connus: self.troncons_connus.iter().copied().collect(),
+            vitesses: self.vitesses.iter().filter_map(|(n, v)| Classe::depuis_nom(n).map(|c| (c, v.min(V_MAX_MS * 3.6)))).collect(),
         }
+    }
+
+    /// Pause ajoutée par heure roulée, en fraction de l'heure.
+    pub fn pause_par_heure(&self) -> f64 {
+        self.pause_min_par_h.unwrap_or(10.0).clamp(0.0, 30.0) / 60.0
     }
 
     /// Distance cible en mètres d'une boucle (distance explicite, sinon durée × vitesse de croisière).
@@ -146,7 +156,7 @@ impl Requete {
                 bail!("duree_min doit être entre 10 et 720");
             }
             // la durée demandée inclut les pauses : on les retire avant de convertir en distance
-            return Ok(m / 60.0 / (1.0 + PAUSE_PAR_HEURE) * VITESSE_CIBLE_KMH * 1000.0);
+            return Ok(m / 60.0 / (1.0 + self.pause_par_heure()) * VITESSE_CIBLE_KMH * 1000.0);
         }
         bail!("distance_km ou duree_min est obligatoire pour une boucle")
     }
@@ -167,6 +177,19 @@ impl Requete {
         if self.variante > 2 {
             bail!("variante doit être 0, 1 ou 2");
         }
+        for (nom, v) in &self.vitesses {
+            if Classe::depuis_nom(nom).is_none() {
+                bail!("vitesses : classe inconnue « {nom} »");
+            }
+            if !v.is_finite() || !(20.0..=130.0).contains(v) {
+                bail!("vitesses : {nom} doit être entre 20 et 130 km/h");
+            }
+        }
+        if let Some(p) = self.pause_min_par_h {
+            if !p.is_finite() || !(0.0..=30.0).contains(&p) {
+                bail!("pause_min_par_h doit être entre 0 et 30");
+            }
+        }
         if self.troncons_connus.len() > 200_000 {
             bail!("troncons_connus trop long");
         }
@@ -185,8 +208,13 @@ impl std::fmt::Display for ErreurRequete {
 }
 impl std::error::Error for ErreurRequete {}
 
-fn duree_avec_pauses(temps_ds: u64) -> u64 {
-    (temps_ds as f64 / 10.0 * (1.0 + PAUSE_PAR_HEURE)).round() as u64
+fn duree_avec_pauses(temps_ds: u64, pause_par_heure: f64) -> u64 {
+    (temps_ds as f64 / 10.0 * (1.0 + pause_par_heure)).round() as u64
+}
+
+/// Temps de base (ds) d'un chemin avec les vitesses réglées dans la requête.
+fn temps_pref(g: &Graphe, p: &Preferences, arcs: &[raido_format::ArcId]) -> u64 {
+    p.temps_chemin_ds(arcs.iter().filter_map(|&id| g.arc(id)))
 }
 
 /// Traite une requête de boucle (`retour`) ou de trajet (`arrivee`) ; le graphe doit déjà
@@ -226,7 +254,7 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
         return Ok(Reponse {
             trace: polyligne::encoder(&trace),
             distance_m: ch.longueur_m,
-            duree_s: duree_avec_pauses(ch.temps_ds),
+            duree_s: duree_avec_pauses(temps_pref(g, &p, &ch.arcs), r.pause_par_heure()),
             denivele_m: None,
             scores: scores.scores,
             variantes: 1,
@@ -267,7 +295,7 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
     Ok(Reponse {
         trace: polyligne::encoder(&trace),
         distance_m: c.longueur_m,
-        duree_s: duree_avec_pauses(c.temps_ds),
+        duree_s: duree_avec_pauses(temps_pref(g, &p, &c.arcs), r.pause_par_heure()),
         denivele_m: None,
         scores: Scores { recouvrement: c.recouvrement, ..scores.scores },
         variantes: cands.len().min(3),
@@ -320,6 +348,25 @@ pub fn est_erreur_requete(e: &anyhow::Error) -> bool {
 
 #[cfg(test)]
 mod tests {
+    fn requete(json: &str) -> Requete {
+        serde_json::from_str(json).expect("requête JSON")
+    }
+
+    #[test]
+    fn vitesses_et_pause_sont_lues_et_validees() {
+        let r = requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true,"distance_km":30,"vitesses":{"secondaire":60,"tertiaire":125},"pause_min_par_h":0}"#);
+        assert!(r.verifier().is_ok());
+        let p = r.preferences();
+        assert_eq!(p.vitesses.len(), 2);
+        assert!(p.vitesses.iter().all(|(_, v)| *v <= 110.0 + 1e-9), "bornées à 110 km/h");
+        assert_eq!(r.pause_par_heure(), 0.0);
+        assert_eq!(requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true}"#).pause_par_heure(), 10.0 / 60.0, "défaut : 10 min par heure");
+        for mauvais in [r#""vitesses":{"piste":50}"#, r#""vitesses":{"secondaire":10}"#, r#""vitesses":{"secondaire":131}"#, r#""pause_min_par_h":31"#, r#""pause_min_par_h":-1"#] {
+            let r = requete(&format!(r#"{{"depart":{{"lat":45.0,"lon":5.0}},"retour":true,"distance_km":30,{mauvais}}}"#));
+            assert!(r.verifier().is_err(), "{mauvais}");
+        }
+    }
+
     use super::*;
 
     #[test]
@@ -348,6 +395,7 @@ mod tests {
 
     #[test]
     fn pauses() {
-        assert_eq!(duree_avec_pauses(36_000), 4_200); // 1 h roulée → 1 h 10
+        assert_eq!(duree_avec_pauses(36_000, 10.0 / 60.0), 4_200); // 1 h roulée → 1 h 10
+        assert_eq!(duree_avec_pauses(36_000, 0.0), 3_600, "sans pause");
     }
 }
