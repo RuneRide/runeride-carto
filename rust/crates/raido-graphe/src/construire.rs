@@ -13,7 +13,7 @@ use raido_format::{
 };
 
 use crate::osm::Extrait;
-use crate::scores::{self, Agglomerations};
+use crate::scores::{self, Agglomerations, PoidsScenique, Scenique};
 
 /// Arc avant attribution de son indice définitif dans sa tuile.
 struct ArcBrut {
@@ -36,10 +36,18 @@ pub struct Statistiques {
     pub noeuds_sans_coordonnees: usize,
     pub composantes: usize,
     pub noeuds_hors_principale: usize,
+    /// Arcs dont le score scénique est positif, et somme des scores (pour la moyenne).
+    pub arcs_scenique_positifs: usize,
+    pub somme_scenique: f64,
 }
 
 /// Construit le graphe et l'écrit dans `sortie/` ; `bornes` (sud, ouest, nord, est) limite l'emprise.
 pub fn construire(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str) -> Result<Statistiques> {
+    construire_avec(ex, sortie, bornes, source, PoidsScenique::default())
+}
+
+/// Comme `construire`, avec les poids du score scénique (calibration, jalon J2).
+pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str, poids: PoidsScenique) -> Result<Statistiques> {
     let mut st = Statistiques { voies: ex.voies.len(), restrictions_lues: ex.restrictions.len(), ..Default::default() };
     let dans_bornes = |lat: f64, lon: f64| bornes.is_none_or(|b| lat >= b[0] && lat <= b[2] && lon >= b[1] && lon <= b[3]);
 
@@ -80,6 +88,7 @@ pub fn construire(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source:
 
     // 3. Arcs : chaque voie est découpée aux intersections.
     let agglos = Agglomerations::nouvelle(&ex.localites);
+    let scenique = Scenique::nouveau(&ex.pois, &ex.routes_touristiques, poids);
     let mut bruts: Vec<ArcBrut> = Vec::new();
     // Pour les restrictions : (nœud pivot OSM, way) → arcs entrants / sortants provisoires.
     let pivots: std::collections::HashSet<i64> = ex.restrictions.iter().map(|r| r.via_noeud).collect();
@@ -111,6 +120,11 @@ pub fn construire(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source:
             let sin = scores::sinuosite(longueur, virages);
             let milieu = pts[pts.len() / 2];
             let agglo = agglos.score(milieu);
+            let scen = scenique.score(&pts, v.id);
+            if scen > 0.0 {
+                st.arcs_scenique_positifs += 1;
+            }
+            st.somme_scenique += scen;
             let rond_point = v.drapeaux & drapeau::ROND_POINT != 0;
             let temps = scores::temps_ds(longueur, v.classe, v.vitesse_kmh, sin, rond_point);
             let geom: Vec<Point> = pts[1..pts.len() - 1].to_vec();
@@ -121,7 +135,7 @@ pub fn construire(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source:
                 temps_ds: temps,
                 classe: v.classe as u8,
                 drapeaux: v.drapeaux,
-                scores: [scores::en_u8(sin), 0, 0, scores::en_u8(agglo)],
+                scores: [scores::en_u8(sin), scores::en_u8(scen), 0, scores::en_u8(agglo)],
                 way_id: v.id,
                 segment,
                 geohash: geohash_u64(milieu.lat_deg(), milieu.lon_deg()),

@@ -1381,6 +1381,7 @@ dependencies = [
  "raido-format",
  "rayon",
  "rkyv",
+ "serde",
  "serde_json",
 ]
 

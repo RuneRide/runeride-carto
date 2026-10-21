@@ -35,13 +35,95 @@ pub struct Localite {
     pub population: u32,
 }
 
+/// Nature d'un point ou d'une zone qui compte pour le score scénique (spec §4.2, §4.3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Genre {
+    /// `mountain_pass=yes`, ou `natural=saddle` nommé « Col … », « Cormet … », « Pas … »
+    Col,
+    /// `tourism=viewpoint`
+    Panorama,
+    /// `natural=peak`
+    Sommet,
+    /// `natural=water`
+    Eau,
+    /// `landuse=forest`, `natural=wood`
+    Foret,
+    /// `leisure=nature_reserve`, `boundary=national_park`, `boundary=protected_area`
+    Parc,
+    /// `landuse=industrial|commercial|retail` : pénalise
+    Activite,
+}
+
+/// Point scénique ponctuel (nœud) ou échantillon du contour d'une zone.
+#[derive(Clone, Debug)]
+pub struct Poi {
+    pub genre: Genre,
+    pub lat: f64,
+    pub lon: f64,
+    /// Nom OSM (cols, sommets, panoramas), pour les diagnostics.
+    pub nom: Option<String>,
+}
+
+/// Zone (way) à échantillonner une fois les coordonnées lues.
+#[derive(Clone, Debug)]
+pub struct ZoneBrute {
+    pub genre: Genre,
+    pub noeuds: Vec<i64>,
+}
+
 #[derive(Default)]
 pub struct Extrait {
     pub voies: Vec<Voie>,
     pub restrictions: Vec<RestrictionOsm>,
     pub localites: Vec<Localite>,
+    /// Points scéniques portés par des nœuds.
+    pub pois: Vec<Poi>,
+    /// Zones (ways) à échantillonner ; résolues par `echantillonner_zones` après la lecture des coordonnées.
+    pub zones: Vec<ZoneBrute>,
+    /// Ways membres d'une relation de route touristique (`route=motorbike`, ou `route=road` avec `tourism` ou `scenic=yes`).
+    pub routes_touristiques: HashSet<i64>,
     /// Coordonnées (lat, lon en degrés) des nœuds référencés.
     pub coords: HashMap<i64, (f64, f64)>,
+}
+
+/// Genre d'un nœud scénique d'après ses étiquettes.
+fn genre_noeud(tags: &HashMap<&str, &str>) -> Option<Genre> {
+    let nom_de_col = tags.get("name").is_some_and(|n| n.starts_with("Col ") || n.starts_with("Cormet ") || n.starts_with("Pas "));
+    // Beaucoup de cols sont étiquetés `natural=saddle` (selle) avec un nom en « Col … » plutôt que `mountain_pass=yes`.
+    if tags.get("mountain_pass") == Some(&"yes") || (tags.get("natural") == Some(&"saddle") && nom_de_col) {
+        Some(Genre::Col)
+    } else if tags.get("tourism") == Some(&"viewpoint") {
+        Some(Genre::Panorama)
+    } else if tags.get("natural") == Some(&"peak") {
+        Some(Genre::Sommet)
+    } else {
+        None
+    }
+}
+
+/// Genre d'une zone (way) d'après ses étiquettes.
+fn genre_zone(tags: &HashMap<&str, &str>) -> Option<Genre> {
+    if tags.get("natural") == Some(&"water") {
+        Some(Genre::Eau)
+    } else if tags.get("landuse") == Some(&"forest") || tags.get("natural") == Some(&"wood") {
+        Some(Genre::Foret)
+    } else if tags.get("leisure") == Some(&"nature_reserve") || matches!(tags.get("boundary").copied(), Some("national_park") | Some("protected_area")) {
+        Some(Genre::Parc)
+    } else if matches!(tags.get("landuse").copied(), Some("industrial") | Some("commercial") | Some("retail")) {
+        Some(Genre::Activite)
+    } else {
+        None
+    }
+}
+
+/// Une relation de route est « touristique » pour les motards si elle est balisée comme telle.
+fn route_touristique(tags: &HashMap<&str, &str>) -> bool {
+    tags.get("type") == Some(&"route")
+        && match tags.get("route").copied() {
+            Some("motorbike") => true,
+            Some("road") => tags.contains_key("tourism") || tags.get("scenic") == Some(&"yes"),
+            _ => false,
+        }
 }
 
 fn classe(highway: &str) -> Option<Classe> {
@@ -193,10 +275,15 @@ pub fn lire(pbf: &Path) -> Result<Extrait> {
                             if let Some(v) = voie_depuis(w.id(), &tags, w.refs().collect()) {
                                 acc.voies.push(v);
                             }
+                        } else if let Some(genre) = genre_zone(&tags) {
+                            acc.zones.push(ZoneBrute { genre, noeuds: w.refs().collect() });
                         }
                     }
                     Element::Relation(r) => {
                         let tags: HashMap<&str, &str> = r.tags().collect();
+                        if route_touristique(&tags) {
+                            acc.routes_touristiques.extend(r.members().filter(|m| m.member_type == RelMemberType::Way).map(|m| m.member_id));
+                        }
                         if tags.get("type") == Some(&"restriction") {
                             let membres: Vec<_> =
                                 r.members()
@@ -215,11 +302,17 @@ pub fn lire(pbf: &Path) -> Result<Extrait> {
                         if let Some(l) = localite(&tags, n.lat(), n.lon()) {
                             acc.localites.push(l);
                         }
+                        if let Some(genre) = genre_noeud(&tags) {
+                            acc.pois.push(Poi { genre, lat: n.lat(), lon: n.lon(), nom: tags.get("name").map(|x| x.to_string()) });
+                        }
                     }
                     Element::DenseNode(n) => {
                         let tags: HashMap<&str, &str> = n.tags().collect();
                         if let Some(l) = localite(&tags, n.lat(), n.lon()) {
                             acc.localites.push(l);
+                        }
+                        if let Some(genre) = genre_noeud(&tags) {
+                            acc.pois.push(Poi { genre, lat: n.lat(), lon: n.lon(), nom: tags.get("name").map(|x| x.to_string()) });
                         }
                     }
                 }
@@ -230,12 +323,18 @@ pub fn lire(pbf: &Path) -> Result<Extrait> {
                 a.voies.extend(b.voies);
                 a.restrictions.extend(b.restrictions);
                 a.localites.extend(b.localites);
+                a.pois.extend(b.pois);
+                a.zones.extend(b.zones);
+                a.routes_touristiques.extend(b.routes_touristiques);
                 a
             },
         )
         .context("première passe (voies, restrictions, localités)")?;
 
-    let voulus: HashSet<i64> = ex.voies.iter().flat_map(|v| v.noeuds.iter().copied()).collect();
+    let mut voulus: HashSet<i64> = ex.voies.iter().flat_map(|v| v.noeuds.iter().copied()).collect();
+    let nb_noeuds_voies = voulus.len();
+    voulus.extend(ex.zones.iter().flat_map(|z| z.noeuds.iter().copied()));
+    let _ = nb_noeuds_voies;
     let lecteur = ElementReader::from_path(pbf)?;
     ex.coords = lecteur
         .par_map_reduce(
@@ -263,7 +362,38 @@ pub fn lire(pbf: &Path) -> Result<Extrait> {
             },
         )
         .context("seconde passe (coordonnées)")?;
+    ex.echantillonner_zones();
     Ok(ex)
+}
+
+/// Pas minimal (m) entre deux échantillons d'un contour de zone : assez fin pour la portée de 300 m du score scénique.
+const PAS_ECHANTILLON_ZONE_M: f64 = 120.0;
+
+impl Extrait {
+    /// Transforme les zones en points échantillonnés le long de leur contour (un tous les ~120 m), puis libère les
+    /// listes de nœuds. Les coordonnées de ces nœuds ne servent plus ensuite : on les retire pour ne pas gonfler le graphe.
+    pub fn echantillonner_zones(&mut self) {
+        let voies: HashSet<i64> = self.voies.iter().flat_map(|v| v.noeuds.iter().copied()).collect();
+        let zones = std::mem::take(&mut self.zones);
+        let mut utilises: HashSet<i64> = HashSet::new();
+        for z in &zones {
+            let mut dernier: Option<(f64, f64)> = None;
+            for n in &z.noeuds {
+                let Some(&(lat, lon)) = self.coords.get(n) else { continue };
+                let loin = dernier.is_none_or(|(la, lo)| {
+                    let dy = (lat - la) * 110_540.0;
+                    let dx = (lon - lo) * 111_320.0 * lat.to_radians().cos();
+                    (dx * dx + dy * dy).sqrt() >= PAS_ECHANTILLON_ZONE_M
+                });
+                if loin {
+                    self.pois.push(Poi { genre: z.genre, lat, lon, nom: None });
+                    dernier = Some((lat, lon));
+                }
+            }
+            utilises.extend(z.noeuds.iter().copied());
+        }
+        self.coords.retain(|n, _| voies.contains(n) || !utilises.contains(n));
+    }
 }
 
 fn localite(tags: &HashMap<&str, &str>, lat: f64, lon: f64) -> Option<Localite> {
@@ -312,6 +442,24 @@ mod tests {
         assert!(voie_depuis(1, &tags(&[("highway", "residential"), ("motor_vehicle", "no")]), vec![1, 2]).is_none());
         // Interdit aux voitures mais ouvert aux motos : gardé.
         assert!(voie_depuis(1, &tags(&[("highway", "residential"), ("motor_vehicle", "no"), ("motorcycle", "yes")]), vec![1, 2]).is_some());
+    }
+
+    #[test]
+    fn cols_et_zones_reconnus() {
+        assert_eq!(genre_noeud(&tags(&[("mountain_pass", "yes")])), Some(Genre::Col));
+        assert_eq!(genre_noeud(&tags(&[("natural", "saddle"), ("name", "Col du Lautaret")])), Some(Genre::Col));
+        assert_eq!(genre_noeud(&tags(&[("natural", "saddle"), ("name", "Selle de Machin")])), None, "une selle sans nom de col n'en est pas un");
+        assert_eq!(genre_noeud(&tags(&[("tourism", "viewpoint")])), Some(Genre::Panorama));
+        assert_eq!(genre_noeud(&tags(&[("natural", "peak")])), Some(Genre::Sommet));
+        assert_eq!(genre_zone(&tags(&[("natural", "water")])), Some(Genre::Eau));
+        assert_eq!(genre_zone(&tags(&[("landuse", "forest")])), Some(Genre::Foret));
+        assert_eq!(genre_zone(&tags(&[("boundary", "national_park")])), Some(Genre::Parc));
+        assert_eq!(genre_zone(&tags(&[("landuse", "retail")])), Some(Genre::Activite));
+        assert_eq!(genre_zone(&tags(&[("landuse", "farmland")])), None);
+        assert!(route_touristique(&tags(&[("type", "route"), ("route", "motorbike")])));
+        assert!(route_touristique(&tags(&[("type", "route"), ("route", "road"), ("tourism", "yes")])));
+        assert!(!route_touristique(&tags(&[("type", "route"), ("route", "road"), ("network", "e-road")])), "une route numérotée ordinaire n'est pas touristique");
+        assert!(!route_touristique(&tags(&[("type", "route"), ("route", "bicycle"), ("tourism", "yes")])));
     }
 
     #[test]

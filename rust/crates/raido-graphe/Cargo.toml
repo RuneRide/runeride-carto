@@ -11,6 +11,7 @@ raido-format = { path = "../raido-format" }
 osmpbf = "0.3"
 rkyv.workspace = true
 anyhow.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 rayon.workspace = true
 clap.workspace = true

@@ -58,7 +58,7 @@ impl Preferences {
 
 /// Poids d'un cran : 0, 0,5, 1, 1,5, 2.
 #[inline]
-fn poids(cran: u8) -> f64 {
+pub fn poids(cran: u8) -> f64 {
     cran.min(4) as f64 * 0.5
 }
 
