@@ -28,6 +28,20 @@ pub fn emprise_entre(a: (f64, f64), b: (f64, f64), marge_m: f64) -> [f64; 4] {
     [a.0.min(b.0) - dlat, a.1.min(b.1) - dlon, a.0.max(b.0) + dlat, a.1.max(b.1) + dlon]
 }
 
+/// Distance (m) entre deux points `(lat, lon)` en degrés.
+pub fn distance_m(a: (f64, f64), b: (f64, f64)) -> f64 {
+    raido_format::haversine_m(Point::depuis_degres(a.0, a.1), Point::depuis_degres(b.0, b.1))
+}
+
+/// Cap initial (degrés, 0 = nord, sens horaire) de `a` vers `b`.
+pub fn cap_deg(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, la2) = (a.0.to_radians(), b.0.to_radians());
+    let dlo = (b.1 - a.1).to_radians();
+    let y = dlo.sin() * la2.cos();
+    let x = la1.cos() * la2.sin() - la1.sin() * la2.cos() * dlo.cos();
+    (y.atan2(x).to_degrees() + 360.0) % 360.0
+}
+
 pub fn deg(p: Point) -> (f64, f64) {
     (p.lat_deg(), p.lon_deg())
 }
@@ -62,5 +76,16 @@ mod tests {
         let (la, lo) = destination(45.0, 5.0, 0.0, 10_000.0);
         assert!((la - 45.0899).abs() < 1e-3, "{la}");
         assert!((lo - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cap_et_distance() {
+        assert!((cap_deg((45.0, 5.0), (46.0, 5.0)) - 0.0).abs() < 0.01, "plein nord");
+        assert!((cap_deg((45.0, 5.0), (45.0, 6.0)) - 90.0).abs() < 0.5, "plein est");
+        assert!((cap_deg((45.0, 5.0), (44.0, 5.0)) - 180.0).abs() < 0.01, "plein sud");
+        assert!((distance_m((45.0, 5.0), (46.0, 5.0)) - 111_195.0).abs() < 300.0);
+        let (la, lo) = destination(45.0, 5.0, 77.0, 5_000.0);
+        assert!((distance_m((45.0, 5.0), (la, lo)) - 5_000.0).abs() < 5.0);
+        assert!((cap_deg((45.0, 5.0), (la, lo)) - 77.0).abs() < 0.3, "destination et cap sont cohérents");
     }
 }

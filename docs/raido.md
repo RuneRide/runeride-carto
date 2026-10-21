@@ -342,16 +342,36 @@ Le classement des 24 candidats de boucle tient désormais compte du score scéni
 
 ### Ce que la mesure montre, honnêtement
 
-- **Le curseur change peu les boucles.** Six départs alpins, boucles de 120 km, scénique 0 contre 4 : score scénique moyen 0,23 → 0,27 ; sur le
+- **Avec les seuls pétales, le curseur changeait peu les boucles** (corrigé par les points de passage ci-dessous). Six départs alpins, boucles de 120 km, scénique 0 contre 4 : score scénique moyen 0,23 → 0,27 ; sur le
   même graphe, 97,8 % de la boucle à 100 m près est commune. La cause est structurelle : une boucle est bâtie sur trois points de passage posés
   sur un triangle selon un cap ; entre ces points A\* n'a que peu d'alternatives. Les 24 candidats se ressemblent et leurs scores scéniques
-  diffèrent peu. **Atteindre « les 10 références dans les 3 premiers candidats » demandera probablement de placer des points de passage sur les
-  attracteurs** (cols, panoramas), proche du jalon J5 (étapes) : à décider avec la calibration.
+  diffèrent peu. D'où les candidats bâtis sur un col ou un panorama (section suivante).
 - **Distance des boucles** : sur 24 départs, 25 km, nouveau graphe contre ancien : |écart| moyen 6,1 → 7,2 % à découverte 0, 9,4 → 9,2 % à 2, 10,1 → 9,9 % à 4 ;
   60 km (12 départs) 3,4 → 4,1 % à 0. Dans le bruit de la mesure, avec une légère tendance à la hausse à 25 km sans découverte.
 - **Limites de l'extraction** : les relations `multipolygon` (grandes forêts, parcs nationaux souvent saisis ainsi) ne sont pas lues, seuls les ways
   étiquetés directement le sont ; seuls les contours comptent (une route à l'intérieur d'une grande forêt n'en profite pas) ; **pas de relief** : la
   BD ALTI de l'IGN n'est pas encore intégrée, donc ni dénivelé relatif ni bonus « route de montagne ».
+
+### Points de passage sur les cols et panoramas (21/10/2026)
+
+Réponse au constat ci-dessus. Le constructeur écrit `attracteurs.json` à côté de `index.json` : les **cols et panoramas nommés** de l'emprise
+(2 768 sur Rhône-Alpes, 201 Ko, dédoublonnés à 100 m, triés). Le moteur le charge s'il existe (un graphe plus ancien marche comme avant).
+Avec le curseur « scénique » à **2 ou plus**, `boucle::balade` ajoute des candidats bâtis sur un attracteur : au plus 8, à une distance du
+départ comprise entre 0,6 et 1,5 fois le rayon nominal des pétales, cols avant panoramas, sans deux attracteurs à moins de 1 km ; chacun dans
+les deux sens du triangle (± 60°). Le premier point de passage est le col, le second ferme le triangle ; le rayon du second est **corrigé jusqu'à
+trois fois** pour tenir la distance, comme pour les pétales. Un candidat attracteur reçoit un bonus de note de 0,4 × le poids du curseur
+(0,4 à 2/4, 0,8 à 4/4), **seulement si sa distance reste dans la tolérance** (sinon les boucles dépassaient de 20 %). La réponse porte
+`passe_par` : le col ou le panorama choisi (`null` pour une boucle en pétale).
+
+Mesuré sur Rhône-Alpes, six départs, boucles de 120 km, scénique 0 contre 4 : **les boucles changent vraiment** (Annecy : Tamié, Croix Fry et
+Aravis ; Bourg-Saint-Maurice : Roselend ; Grenoble : Granier, Placette) ; score scénique moyen 0,23 → 0,28, cols traversés 3,6 → 4,2 par boucle.
+Distance (écart moyen absolu, scénique 0 / 2 / 3 / 4) : **25 km, 24 départs** 6,9 / 7,9 / 10,4 / 10,3 % (6,1 à 7,2 % avant tout ce travail, à
+découverte 0) ; **60 km, 12 départs** 4,6 / 3,8 / 4,7 / 4,9 %, un départ à 22,7 % pour les curseurs 3 et 4. **Coût** : banc de 12 boucles de
+120 km, médiane **0,42 s → 0,58 s** (p95 0,47 → 0,73 s) quand le scénique est demandé ; rien ne change pour un curseur à 0 ou 1.
+
+Limites : le score scénique reste un indicateur grossier (« plus de cols » n'est pas « plus beau ») : **seules tes balades de référence diront si
+ces boucles sont les bonnes**. Un col dont le nœud OSM est loin d'une route carrossable n'est pas utilisable (accroche à 800 m). La PWA n'affiche
+pas encore `passe_par`.
 
 ### Calibrer avec tes balades : `rust/tools/evaluer-references.py`
 
