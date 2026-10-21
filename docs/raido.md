@@ -229,6 +229,27 @@ graphe que l'appariement (tracés idéaux hors bruit) ; **aucun tracé GeoRide r
 tronçons de plus de 1,5 km sans intersection vus seulement si un de leurs nœuds est proche ; pas d'horodatage ni de vitesse.
 L'appel après `POST /api/georide/synchronisation` (PHP) reste à écrire.
 
+### Distance des petites boucles avec découverte (21/10/2026)
+
+Constat : avec l'historique d'une boucle précédente et une forte découverte, les boucles de 25 km pouvaient s'écarter de la
+cible (jusqu'à +59 %). Le raffinement du rayon des pétales, jusque-là **une seule** correction des trois meilleurs candidats,
+fait désormais **jusqu'à trois passes** (`PASSES_RAFFINEMENT`), arrêtées dès qu'aucune ne s'améliore : les pénalités rendent la
+distance peu proportionnelle au rayon.
+
+Mesuré sur Rhône-Alpes (départs tirés au hasard, graine fixe, historique = tronçons appariés d'une boucle précédente) :
+
+| Boucle | Découverte | Départs hors ±15 % avant → après | \|écart\| moyen avant → après | Nouveauté moyenne après |
+|---|---|---|---|---|
+| 25 km, 10 départs | 0 | 1 → 1 | 7,8 → 7,2 % | 4 % |
+| | 2 | 2 → 2 | 12,7 → 10,3 % | 67 % |
+| | 3 | 4 → 2 | 14,3 → 10,1 % | 78 % |
+| | 4 | 4 → 2 | 15,5 → 11,4 % | 76 % |
+| 60 km, 8 départs | 0 à 4 | 0 → 0 à 1 | 3,7 à 6,0 → 3,1 à 4,6 % | 73 à 76 % |
+
+**Reste** : un départ sur dix reste à +35 % à +59 % à 25 km, y compris sans découverte (fond de vallée sans boucle courte) ; la réponse
+porte alors l'avertissement « distance obtenue à +N % de la cible ». Le temps de calcul ne change pas de façon mesurable
+(≈ 0,1 à 0,5 s par boucle de 25 km). Écart d'un départ sur le 60 km à découverte 3 : 15,2 % (1 sur 8), 7 % avant.
+
 ### Essai de bout en bout, sans AWS
 
 `rust/tools/essai-jeton-local.sh <runeride/web> <dossier du graphe>` : la classe PHP `Jwt` de `runeride` engendre une
