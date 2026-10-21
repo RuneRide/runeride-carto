@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, Context, Result};
 use raido_format::{
     bornes_tuile, chemin_tuile, cle_de, cle_tuile, local_de, ArcId, ArchivedArc, ArchivedNoeud, ArchivedRestriction,
-    ArchivedTuile, CleTuile, Index, NoeudId, Point, VERSION_FORMAT,
+    ArchivedTuile, Attracteur, CleTuile, Index, NoeudId, Point, VERSION_FORMAT,
 };
 use rkyv::util::AlignedVec;
 
@@ -79,6 +79,8 @@ impl SourceTuiles for SourceCache {
 pub struct Graphe {
     source: Box<dyn SourceTuiles>,
     pub index: Index,
+    /// Cols et panoramas nommés (`attracteurs.json`, facultatif) : points de passage possibles d'une boucle.
+    pub attracteurs: Vec<Attracteur>,
     tuiles: HashMap<CleTuile, AlignedVec>,
     pub octets_charges: u64,
 }
@@ -96,7 +98,12 @@ impl Graphe {
         if index.version_format != VERSION_FORMAT {
             return Err(anyhow!("format {} attendu, index en {}", VERSION_FORMAT, index.version_format));
         }
-        Ok(Graphe { source, index, tuiles: HashMap::new(), octets_charges: 0 })
+        // Facultatif : un graphe construit avant le jalon J2 n'en a pas, les boucles passent alors seulement par des pétales.
+        let attracteurs: Vec<Attracteur> = match source.lire("attracteurs.json")? {
+            Some(o) => serde_json::from_slice(&o).context("attracteurs.json")?,
+            None => Vec::new(),
+        };
+        Ok(Graphe { source, index, attracteurs, tuiles: HashMap::new(), octets_charges: 0 })
     }
 
     pub fn source(&self) -> &dyn SourceTuiles {

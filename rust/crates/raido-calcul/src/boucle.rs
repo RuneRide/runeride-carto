@@ -77,6 +77,10 @@ pub struct Candidat {
     pub agglo: f64,
     /// Score scénique moyen pondéré par la longueur, 0..1.
     pub scenique: f64,
+    /// Col ou panorama sur lequel la boucle a été bâtie (candidats « attracteurs »), le cas échéant.
+    pub passe_par: Option<String>,
+    /// Index de l'attracteur dans la liste retenue et sens du triangle (+60° ou −60°), pour rejouer le candidat.
+    pub origine_attracteur: Option<(usize, f64)>,
     /// Note composite : plus petite = meilleure.
     pub note: f64,
     pub noeuds_explores: usize,
@@ -124,9 +128,33 @@ pub fn balade(g: &Graphe, p: &Preferences, depart: NoeudId, pb: &ParametresBoucl
         if p1 == depart || p2 == depart || p1 == p2 {
             return None;
         }
-        boucle_par(g, p, depart, p1, p2, cap, f, pb)
+        boucle_par(g, p, depart, p1, p2, cap, f, pb, None)
     };
     let mut candidats: Vec<Candidat> = essais.par_iter().filter_map(|&(cap, f)| petale(cap, f)).collect();
+    // Boucles bâties sur un col ou un panorama proche : seulement si l'utilisateur demande du scénique (curseur ≥ 2).
+    let r_nominal = pb.distance_m / 3.0 * 0.72;
+    let cibles: Vec<&raido_format::Attracteur> = if p.scenique >= 2 { attracteurs_candidats(g, lat, lon, r_nominal) } else { Vec::new() };
+    // Un attracteur A, un sens (±60°) et un facteur `f2` sur le rayon du second point de passage : le triangle part de
+    // la position de A (rayon fixé par le col) et se referme à `f2` fois cette distance.
+    let sur_attracteur = |i: usize, decalage: f64, f2: f64| -> Option<Candidat> {
+        let a = cibles[i];
+        let p1 = noeud_accroche(g, p, a.lat, a.lon, 800.0)?;
+        let cap = geo::cap_deg((lat, lon), (a.lat, a.lon));
+        let d = geo::distance_m((lat, lon), (a.lat, a.lon));
+        let (la2, lo2) = geo::destination(lat, lon, cap + decalage, d * f2);
+        let p2 = noeud_accroche(g, p, la2, lo2, 3_000.0)?;
+        if p1 == depart || p2 == depart || p1 == p2 {
+            return None;
+        }
+        let mut c = boucle_par(g, p, depart, p1, p2, cap, f2, pb, Some(a.nom.as_str()))?;
+        c.origine_attracteur = Some((i, decalage));
+        Some(c)
+    };
+    if !cibles.is_empty() {
+        let essais_attr: Vec<(usize, f64)> = (0..cibles.len()).flat_map(|i| [(i, 60.0), (i, -60.0)]).collect();
+        let sur_attracteurs: Vec<Candidat> = essais_attr.par_iter().filter_map(|&(i, dec)| sur_attracteur(i, dec, 1.0)).collect();
+        candidats.extend(sur_attracteurs);
+    }
     candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
 
     // Raffinement : les trois meilleurs trop longs ou trop courts (> 4 %) sont rejoués avec un rayon corrigé du rapport
@@ -134,18 +162,30 @@ pub fn balade(g: &Graphe, p: &Preferences, depart: NoeudId, pb: &ParametresBoucl
     // recouvrement) rendent la distance peu proportionnelle au rayon, une seule correction ne suffit pas toujours
     // sur les petites boucles.
     for _ in 0..PASSES_RAFFINEMENT {
-        let a_raffiner: Vec<(usize, f64, f64)> = candidats
+        // (rang, origine, facteur corrigé) ; origine : Ok(cap) pour un pétale, Err((attracteur, sens)) pour un attracteur.
+        let a_raffiner: Vec<(usize, Result<f64, (usize, f64)>, f64)> = candidats
             .iter()
             .take(3)
             .enumerate()
             .filter(|(_, c)| ((c.longueur_m as f64 - pb.distance_m) / pb.distance_m).abs() > 0.04)
-            .map(|(i, c)| (i, c.cap_deg, c.facteur * pb.distance_m / c.longueur_m as f64))
+            .map(|(i, c)| {
+                let origine = match c.origine_attracteur {
+                    Some(o) => Err(o),
+                    None => Ok(c.cap_deg),
+                };
+                (i, origine, c.facteur * pb.distance_m / c.longueur_m as f64)
+            })
             .collect();
         if a_raffiner.is_empty() {
             break;
         }
-        let raffines: Vec<(usize, Candidat)> =
-            a_raffiner.par_iter().filter_map(|&(i, cap, f)| petale(cap, f).map(|c| (i, c))).collect();
+        let raffines: Vec<(usize, Candidat)> = a_raffiner
+            .par_iter()
+            .filter_map(|(i, origine, f)| match origine {
+                Ok(cap) => petale(*cap, *f).map(|c| (*i, c)),
+                Err((a, dec)) => sur_attracteur(*a, *dec, *f).map(|c| (*i, c)),
+            })
+            .collect();
         let mut amelioree = false;
         for (i, c) in raffines {
             if c.note < candidats[i].note {
@@ -163,7 +203,7 @@ pub fn balade(g: &Graphe, p: &Preferences, depart: NoeudId, pb: &ParametresBoucl
 }
 
 #[allow(clippy::too_many_arguments)]
-fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId, cap: f64, facteur: f64, pb: &ParametresBoucle) -> Option<Candidat> {
+fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId, cap: f64, facteur: f64, pb: &ParametresBoucle, passe_par: Option<&str>) -> Option<Candidat> {
     let mut penalises: HashSet<ArcId> = HashSet::new();
     let mut arcs = Vec::new();
     let mut explores = 0;
@@ -201,6 +241,83 @@ fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId,
     let (sinuosite, agglo, scenique) = (sin / lf, agg / lf, scen / lf);
     // Note : écart de distance au-delà de la tolérance (fort), recouvrement (fort),
     // agglomération (moyen), sinuosité (bonus), score scénique (bonus proportionnel au curseur « scénique » : 0 à 3).
-    let note = (ecart - pb.tolerance).max(0.0) * 4.0 + ecart + recouvrement * 3.0 + agglo * 1.0 - sinuosite * 1.5 - scenique * cout::poids(p.scenique) * 1.5;
-    Some(Candidat { cap_deg: cap, facteur, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, scenique, note, noeuds_explores: explores })
+    // Le bonus d'un col n'est accordé que si la distance reste dans la tolérance : une boucle scénique ne doit pas être beaucoup trop longue.
+    let bonus_attracteur = if passe_par.is_some() && ecart <= pb.tolerance { 0.4 * cout::poids(p.scenique) } else { 0.0 };
+    let note = (ecart - pb.tolerance).max(0.0) * 4.0 + ecart + recouvrement * 3.0 + agglo * 1.0 - sinuosite * 1.5 - scenique * cout::poids(p.scenique) * 1.5 - bonus_attracteur;
+    Some(Candidat { cap_deg: cap, facteur, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, scenique, passe_par: passe_par.map(str::to_string), origine_attracteur: None, note, noeuds_explores: explores })
+}
+
+/// Attracteurs du graphe retenus pour une boucle depuis `(lat, lon)` ; voir `choisir_attracteurs`.
+pub fn attracteurs_candidats(g: &Graphe, lat: f64, lon: f64, r_nominal: f64) -> Vec<&raido_format::Attracteur> {
+    choisir_attracteurs(&g.attracteurs, lat, lon, r_nominal)
+}
+
+/// Attracteurs dont la distance au départ est voisine du rayon nominal des pétales (0,6 à 1,5 fois), cols avant panoramas
+/// à distance égale, les plus proches du rayon nominal en tête, sans doublon à moins de 1 km : au plus `MAX_ATTRACTEURS`.
+pub fn choisir_attracteurs(tous: &[raido_format::Attracteur], lat: f64, lon: f64, r_nominal: f64) -> Vec<&raido_format::Attracteur> {
+    let mut v: Vec<(&raido_format::Attracteur, f64)> = tous
+        .iter()
+        .filter_map(|a| {
+            let rel = geo::distance_m((lat, lon), (a.lat, a.lon)) / r_nominal;
+            (0.6..=1.5).contains(&rel).then(|| (a, (rel - 1.0).abs() + if a.genre == "col" { 0.0 } else { 0.25 }))
+        })
+        .collect();
+    v.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal).then(x.0.nom.cmp(&y.0.nom)));
+    let mut choisis: Vec<&raido_format::Attracteur> = Vec::new();
+    for (a, _) in v {
+        if choisis.iter().all(|c| geo::distance_m((c.lat, c.lon), (a.lat, a.lon)) > 1_000.0) {
+            choisis.push(a);
+            if choisis.len() >= MAX_ATTRACTEURS {
+                break;
+            }
+        }
+    }
+    choisis
+}
+
+/// Nombre maximal de boucles bâties sur un attracteur (chacune en deux sens).
+const MAX_ATTRACTEURS: usize = 8;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use raido_format::Attracteur;
+
+    fn att(genre: &str, nom: &str, lat: f64, lon: f64) -> Attracteur {
+        Attracteur { lat, lon, genre: genre.to_string(), nom: nom.to_string() }
+    }
+
+    /// Point à `d` mètres plein nord de (45, 5).
+    fn nord(d: f64) -> (f64, f64) {
+        (45.0 + d / 110_540.0, 5.0)
+    }
+
+    #[test]
+    fn choix_des_attracteurs() {
+        let r = 10_000.0;
+        let (la, lo) = nord(10_000.0);
+        let col = att("col", "Col A", la, lo);
+        let pano = att("panorama", "Vue A", la, lo + 0.02); // même distance à peu près, panorama : passe après le col
+        let (lb, _) = nord(2_000.0);
+        let trop_proche = att("col", "Col proche", lb, 5.0); // 0,2 fois le rayon : hors plage
+        let (lc, _) = nord(20_000.0);
+        let trop_loin = att("col", "Col loin", lc, 5.0); // 2 fois : hors plage
+        let doublon = att("col", "Col A bis", la + 0.003, lo); // ≈ 330 m du col A : écarté
+        let tous = vec![trop_proche, trop_loin, pano.clone(), doublon, col.clone()];
+        let choisis = choisir_attracteurs(&tous, 45.0, 5.0, r);
+        assert_eq!(choisis.iter().map(|a| a.nom.as_str()).collect::<Vec<_>>(), vec!["Col A", "Vue A"], "col d'abord, doublon et hors plage écartés");
+        assert!(choisir_attracteurs(&[], 45.0, 5.0, r).is_empty());
+    }
+
+    #[test]
+    fn au_plus_huit_attracteurs_espaces() {
+        let tous: Vec<Attracteur> = (0..30)
+            .map(|i| {
+                let (la, lo) = geo::destination(45.0, 5.0, i as f64 * 12.0, 10_000.0);
+                att("col", &format!("Col {i}"), la, lo)
+            })
+            .collect();
+        let choisis = choisir_attracteurs(&tous, 45.0, 5.0, 10_000.0);
+        assert_eq!(choisis.len(), MAX_ATTRACTEURS);
+    }
 }

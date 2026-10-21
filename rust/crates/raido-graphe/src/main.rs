@@ -89,6 +89,7 @@ fn main() -> Result<()> {
                 st.noeuds_hors_principale,
                 t1.elapsed().as_secs_f64()
             );
+            eprintln!("attracteurs : {} cols et panoramas nommés dans attracteurs.json", st.attracteurs);
             eprintln!(
                 "scénique : {:.1} % des arcs ont un score positif, moyenne {:.3}",
                 100.0 * st.arcs_scenique_positifs as f64 / st.arcs.max(1) as f64,

@@ -250,6 +250,16 @@ pub struct TuileIndex {
     pub nb_arcs: u32,
 }
 
+/// Col ou panorama nommé, lieu où l'on peut faire passer une boucle (`attracteurs.json`, à côté de `index.json`).
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq)]
+pub struct Attracteur {
+    pub lat: f64,
+    pub lon: f64,
+    /// `col` ou `panorama`.
+    pub genre: String,
+    pub nom: String,
+}
+
 /// Chemin relatif du fichier d'une tuile.
 pub fn chemin_tuile(cle: CleTuile) -> String {
     let (x, y) = xy_de_cle(cle);

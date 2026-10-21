@@ -8,7 +8,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use raido_format::{
-    chemin_tuile, cle_tuile, drapeau, drapeau_noeud, geohash_u64, id_global, Arc, CleTuile, Index, Noeud, NoeudId, Point,
+    chemin_tuile, cle_tuile, Attracteur, drapeau, drapeau_noeud, geohash_u64, id_global, Arc, CleTuile, Index, Noeud, NoeudId, Point,
     Restriction, Tuile, TuileIndex, ID_NUL, VERSION_FORMAT,
 };
 
@@ -38,6 +38,8 @@ pub struct Statistiques {
     pub noeuds_hors_principale: usize,
     /// Arcs dont le score scénique est positif, et somme des scores (pour la moyenne).
     pub arcs_scenique_positifs: usize,
+    /// Cols et panoramas nommés écrits dans `attracteurs.json`.
+    pub attracteurs: usize,
     pub somme_scenique: f64,
 }
 
@@ -328,7 +330,29 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
         nb_arcs: st.arcs as u64,
     };
     fs::write(sortie.join("index.json"), serde_json::to_string_pretty(&index)?)?;
+    let attracteurs = attracteurs_de(ex, &index.bornes);
+    st.attracteurs = attracteurs.len();
+    fs::write(sortie.join("attracteurs.json"), serde_json::to_string(&attracteurs)?)?;
     Ok(st)
+}
+
+/// Cols et panoramas nommés dans l'emprise du graphe, sans doublon (même genre, même nom, à moins de 100 m), triés pour
+/// que deux constructions du même extrait donnent le même fichier.
+pub fn attracteurs_de(ex: &Extrait, bornes: &[f64; 4]) -> Vec<Attracteur> {
+    use crate::osm::Genre;
+    let mut v: Vec<Attracteur> = ex
+        .pois
+        .iter()
+        .filter(|p| matches!(p.genre, Genre::Col | Genre::Panorama))
+        .filter(|p| p.lat >= bornes[0] && p.lat <= bornes[2] && p.lon >= bornes[1] && p.lon <= bornes[3])
+        .filter_map(|p| {
+            let nom = p.nom.as_ref()?.trim().to_string();
+            (!nom.is_empty()).then(|| Attracteur { lat: (p.lat * 1e5).round() / 1e5, lon: (p.lon * 1e5).round() / 1e5, genre: if p.genre == Genre::Col { "col" } else { "panorama" }.to_string(), nom })
+        })
+        .collect();
+    v.sort_by(|a, b| (&a.genre, &a.nom).cmp(&(&b.genre, &b.nom)).then(a.lat.partial_cmp(&b.lat).unwrap()).then(a.lon.partial_cmp(&b.lon).unwrap()));
+    v.dedup_by(|b, a| a.genre == b.genre && a.nom == b.nom && ((a.lat - b.lat) * 110_540.0).abs() < 100.0 && ((a.lon - b.lon) * 80_000.0).abs() < 100.0);
+    v
 }
 
 fn horodatage() -> String {
@@ -347,4 +371,34 @@ fn horodatage() -> String {
     let mo = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if mo <= 2 { y + 1 } else { y };
     format!("{y:04}-{mo:02}-{d:02}T{h:02}:{m:02}Z")
+}
+
+#[cfg(test)]
+mod tests_attracteurs {
+    use super::*;
+    use crate::osm::{Genre, Poi};
+
+    fn poi(genre: Genre, nom: Option<&str>, lat: f64, lon: f64) -> Poi {
+        Poi { genre, lat, lon, nom: nom.map(str::to_string) }
+    }
+
+    #[test]
+    fn attracteurs_filtres_dedoublonnes_et_tries() {
+        let ex = Extrait {
+            pois: vec![
+                poi(Genre::Col, Some("Col du Test"), 45.0, 5.0),
+                poi(Genre::Col, Some("Col du Test"), 45.0003, 5.0), // ≈ 33 m : doublon
+                poi(Genre::Col, Some("Col du Test"), 45.1, 5.0),    // même nom, ailleurs : gardé
+                poi(Genre::Col, None, 45.0, 5.0),                    // sans nom : écarté
+                poi(Genre::Sommet, Some("Pic"), 45.0, 5.0),          // pas un attracteur
+                poi(Genre::Panorama, Some("Belvédère"), 45.0, 5.0),
+                poi(Genre::Col, Some("Col hors emprise"), 50.0, 5.0),
+                poi(Genre::Eau, Some("Lac"), 45.0, 5.0),
+            ],
+            ..Default::default()
+        };
+        let a = attracteurs_de(&ex, &[44.0, 4.0, 46.0, 6.0]);
+        assert_eq!(a.iter().map(|x| (x.genre.as_str(), x.nom.as_str())).collect::<Vec<_>>(), vec![("col", "Col du Test"), ("col", "Col du Test"), ("panorama", "Belvédère")]);
+        assert_eq!(a, attracteurs_de(&ex, &[44.0, 4.0, 46.0, 6.0]), "déterministe");
+    }
 }
