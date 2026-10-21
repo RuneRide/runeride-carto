@@ -4,7 +4,11 @@
 
 use raido_format::{haversine_m, Classe, Point};
 
-use crate::osm::Localite;
+use std::collections::{HashMap, HashSet};
+
+use serde::Deserialize;
+
+use crate::osm::{Genre, Localite, Poi};
 
 /// Vitesse de base à moto en balade, par classe de route (km/h) : table de `raido_format::Classe`.
 pub fn vitesse_classe(c: Classe) -> f64 {
@@ -119,6 +123,128 @@ impl Agglomerations {
     }
 }
 
+/// Poids du score scénique (spec §4.3). **Valeurs provisoires, à calibrer sur des balades connues (jalon J2)** : le fichier
+/// JSON passé à `raido-graphe construire --poids` remplace ceux de ce fichier, champ par champ, sans recompiler.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PoidsScenique {
+    /// Portée (m) d'un point ou d'un échantillon de contour autour d'un tronçon.
+    pub rayon_m: f64,
+    /// Pas (m) de l'échantillonnage le long d'un tronçon.
+    pub echantillon_m: f64,
+    pub col: f64,
+    pub panorama: f64,
+    pub sommet: f64,
+    pub eau: f64,
+    pub foret: f64,
+    pub parc: f64,
+    /// Bonus d'appartenance à une relation de route touristique.
+    pub route_touristique: f64,
+    /// Pénalité en zone industrielle ou commerciale (retranchée du bonus).
+    pub activite: f64,
+}
+
+impl Default for PoidsScenique {
+    fn default() -> Self {
+        PoidsScenique { rayon_m: 300.0, echantillon_m: 150.0, col: 0.9, panorama: 0.7, sommet: 0.4, eau: 0.35, foret: 0.3, parc: 0.3, route_touristique: 0.5, activite: 0.5 }
+    }
+}
+
+impl PoidsScenique {
+    fn de(&self, g: Genre) -> f64 {
+        match g {
+            Genre::Col => self.col,
+            Genre::Panorama => self.panorama,
+            Genre::Sommet => self.sommet,
+            Genre::Eau => self.eau,
+            Genre::Foret => self.foret,
+            Genre::Parc => self.parc,
+            Genre::Activite => self.activite,
+        }
+    }
+}
+
+/// Index spatial des points scéniques (grille de 0,005°, ≈ 550 m) et calcul du score scénique d'un tronçon.
+pub struct Scenique {
+    poids: PoidsScenique,
+    cellules: HashMap<(i32, i32), Vec<(Genre, f64, f64)>>,
+    routes: HashSet<i64>,
+}
+
+impl Scenique {
+    const PAS: f64 = 0.005;
+
+    pub fn nouveau(pois: &[Poi], routes_touristiques: &HashSet<i64>, poids: PoidsScenique) -> Scenique {
+        let mut cellules: HashMap<(i32, i32), Vec<(Genre, f64, f64)>> = HashMap::new();
+        for p in pois {
+            cellules.entry(Self::cellule(p.lat, p.lon)).or_default().push((p.genre, p.lat, p.lon));
+        }
+        Scenique { poids, cellules, routes: routes_touristiques.clone() }
+    }
+
+    fn cellule(lat: f64, lon: f64) -> (i32, i32) {
+        ((lat / Self::PAS).floor() as i32, (lon / Self::PAS).floor() as i32)
+    }
+
+    /// Genres présents à moins de `rayon_m` du point.
+    fn genres_proches(&self, lat: f64, lon: f64) -> HashSet<Genre> {
+        let (ci, cj) = Self::cellule(lat, lon);
+        let marge = (self.poids.rayon_m / 550.0).ceil() as i32;
+        let (ky, kx) = (110_540.0, 111_320.0 * lat.to_radians().cos());
+        let mut genres = HashSet::new();
+        for i in ci - marge..=ci + marge {
+            for j in cj - marge..=cj + marge {
+                for &(g, la, lo) in self.cellules.get(&(i, j)).into_iter().flatten() {
+                    let (dy, dx) = ((la - lat) * ky, (lo - lon) * kx);
+                    if dx * dx + dy * dy <= self.poids.rayon_m * self.poids.rayon_m {
+                        genres.insert(g);
+                    }
+                }
+            }
+        }
+        genres
+    }
+
+    /// Score 0..1 d'un tronçon : bonus (1 − Π(1 − poids × part des échantillons proches d'un point de ce genre)), relevé
+    /// par l'appartenance à une route touristique, diminué de la pénalité de zone d'activité.
+    pub fn score(&self, pts: &[Point], voie_osm: i64) -> f64 {
+        if pts.is_empty() {
+            return 0.0;
+        }
+        // Échantillons : extrémités et un point tous les `echantillon_m` environ le long de la polyligne.
+        let mut ech: Vec<Point> = vec![pts[0]];
+        let mut depuis = 0.0;
+        for w in pts.windows(2) {
+            depuis += haversine_m(w[0], w[1]);
+            if depuis >= self.poids.echantillon_m {
+                ech.push(w[1]);
+                depuis = 0.0;
+            }
+        }
+        if ech.last().map(|p| (p.lat, p.lon)) != pts.last().map(|p| (p.lat, p.lon)) {
+            ech.push(*pts.last().unwrap());
+        }
+        let mut compte: HashMap<Genre, usize> = HashMap::new();
+        for p in &ech {
+            for g in self.genres_proches(p.lat_deg(), p.lon_deg()) {
+                *compte.entry(g).or_default() += 1;
+            }
+        }
+        let n = ech.len() as f64;
+        let mut reste = 1.0;
+        for (&g, &c) in &compte {
+            if g != Genre::Activite {
+                reste *= 1.0 - self.poids.de(g) * (c as f64 / n);
+            }
+        }
+        if self.routes.contains(&voie_osm) {
+            reste *= 1.0 - self.poids.route_touristique;
+        }
+        let penalite = compte.get(&Genre::Activite).map_or(0.0, |&c| self.poids.activite * c as f64 / n);
+        (1.0 - reste - penalite).clamp(0.0, 1.0)
+    }
+}
+
 pub fn en_u8(score: f64) -> u8 {
     (score.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -126,6 +252,43 @@ pub fn en_u8(score: f64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pt(lat: f64, lon: f64) -> Point {
+        Point::depuis_degres(lat, lon)
+    }
+
+    fn poi(genre: Genre, lat: f64, lon: f64) -> Poi {
+        Poi { genre, lat, lon, nom: None }
+    }
+
+    #[test]
+    fn score_scenique_proximite_penalite_et_route_touristique() {
+        // Tronçon de ≈ 790 m vers l'est ; un col à ≈ 100 m au nord de son milieu, un panorama à 2 km (hors portée).
+        let tr = [pt(45.0, 5.0), pt(45.0, 5.005), pt(45.0, 5.01)];
+        let col = poi(Genre::Col, 45.0 + 100.0 / 110_540.0, 5.005);
+        let loin = poi(Genre::Panorama, 45.0 + 2_000.0 / 110_540.0, 5.005);
+        let sans: HashSet<i64> = HashSet::new();
+        let s = Scenique::nouveau(&[col.clone(), loin.clone()], &sans, PoidsScenique::default());
+        let v = s.score(&tr, 1);
+        assert!(v > 0.3 && v < 0.9, "col proche d'une partie du tronçon : {v}");
+        let vide = Scenique::nouveau(&[loin], &sans, PoidsScenique::default());
+        assert_eq!(vide.score(&tr, 1), 0.0, "rien dans le rayon");
+        let routes: HashSet<i64> = HashSet::from([1]);
+        let avec_route = Scenique::nouveau(&[col.clone()], &routes, PoidsScenique::default());
+        assert!(avec_route.score(&tr, 1) > s.score(&tr, 1), "la route touristique relève le score");
+        assert_eq!(avec_route.score(&tr, 2), s.score(&tr, 1), "une autre voie n'en profite pas");
+        let zone = poi(Genre::Activite, 45.0, 5.005);
+        let penalise = Scenique::nouveau(&[col, zone], &sans, PoidsScenique::default());
+        assert!(penalise.score(&tr, 1) < s.score(&tr, 1), "zone d'activité : pénalité");
+        assert!(penalise.score(&tr, 1) >= 0.0);
+    }
+
+    #[test]
+    fn poids_json_partiels_et_stricts() {
+        let p: PoidsScenique = serde_json::from_str(r#"{"col": 1.0, "rayon_m": 200}"#).unwrap();
+        assert_eq!((p.col, p.rayon_m, p.panorama), (1.0, 200.0, PoidsScenique::default().panorama), "champs absents : défauts");
+        assert!(serde_json::from_str::<PoidsScenique>(r#"{"colle": 1.0}"#).is_err(), "faute de frappe refusée");
+    }
 
     #[test]
     fn ligne_droite_sans_virage() {

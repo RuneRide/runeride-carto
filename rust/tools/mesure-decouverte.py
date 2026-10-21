@@ -5,7 +5,7 @@
 # Mesure : écart de distance des boucles avec découverte, sur plusieurs départs, avec l'historique d'une boucle précédente.
 import json, os, subprocess, sys, random
 B = '/home/philippe/github.com/runeride/runeride-carto/rust/target/release/bootstrap'
-G = '/home/philippe/github.com/runeride/runeride-carto/donnees/graphe/rhone-alpes'
+G = os.environ.get('RAIDO_GRAPHE', '/home/philippe/github.com/runeride/runeride-carto/donnees/graphe/rhone-alpes')
 ENV = dict(os.environ, RAIDO_SOURCE=f'local:{G}', RAIDO_CACHE='', RAIDO_JETON='desactive', RAIDO_THREADS='4', RAIDO_CLE_SERVICE='k')
 def run(chemin, corps, h=None):
     evt = {"rawPath": chemin, "requestContext": {"http": {"method": "POST"}}, "headers": h or {}, "body": json.dumps(corps), "isBase64Encoded": False}

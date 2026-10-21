@@ -75,6 +75,8 @@ pub struct Candidat {
     pub sinuosite: f64,
     /// Part de la longueur dans une agglomération, 0..1.
     pub agglo: f64,
+    /// Score scénique moyen pondéré par la longueur, 0..1.
+    pub scenique: f64,
     /// Note composite : plus petite = meilleure.
     pub note: f64,
     pub noeuds_explores: usize,
@@ -177,7 +179,7 @@ fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId,
         arcs.extend(tr);
     }
     let mut vus: HashSet<(i64, u16)> = HashSet::new();
-    let (mut longueur, mut temps, mut double, mut sin, mut agg) = (0u64, 0u64, 0u64, 0.0f64, 0.0f64);
+    let (mut longueur, mut temps, mut double, mut sin, mut agg, mut scen) = (0u64, 0u64, 0u64, 0.0f64, 0.0f64, 0.0f64);
     for &id in &arcs {
         let a = g.arc(id)?;
         let l = a.longueur_m.to_native() as u64;
@@ -185,6 +187,7 @@ fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId,
         temps += a.temps_ds.to_native() as u64;
         sin += l as f64 * a.scores[score::SINUOSITE] as f64 / 255.0;
         agg += l as f64 * a.scores[score::AGGLO] as f64 / 255.0;
+        scen += l as f64 * a.scores[score::SCENIQUE] as f64 / 255.0;
         if !vus.insert((a.way_id.to_native(), a.segment.to_native())) {
             double += l;
         }
@@ -195,9 +198,9 @@ fn boucle_par(g: &Graphe, p: &Preferences, d: NoeudId, p1: NoeudId, p2: NoeudId,
     let lf = longueur as f64;
     let recouvrement = double as f64 / lf;
     let ecart = ((lf - pb.distance_m) / pb.distance_m).abs();
-    let (sinuosite, agglo) = (sin / lf, agg / lf);
+    let (sinuosite, agglo, scenique) = (sin / lf, agg / lf, scen / lf);
     // Note : écart de distance au-delà de la tolérance (fort), recouvrement (fort),
-    // agglomération (moyen), sinuosité (bonus).
-    let note = (ecart - pb.tolerance).max(0.0) * 4.0 + ecart + recouvrement * 3.0 + agglo * 1.0 - sinuosite * 1.5;
-    Some(Candidat { cap_deg: cap, facteur, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, note, noeuds_explores: explores })
+    // agglomération (moyen), sinuosité (bonus), score scénique (bonus proportionnel au curseur « scénique » : 0 à 3).
+    let note = (ecart - pb.tolerance).max(0.0) * 4.0 + ecart + recouvrement * 3.0 + agglo * 1.0 - sinuosite * 1.5 - scenique * cout::poids(p.scenique) * 1.5;
+    Some(Candidat { cap_deg: cap, facteur, arcs, longueur_m: longueur, temps_ds: temps, recouvrement, sinuosite, agglo, scenique, note, noeuds_explores: explores })
 }

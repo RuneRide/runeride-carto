@@ -309,6 +309,62 @@ variable sensible `cle_service` (`runeride-cloud` #4).
 5. Mesurer démarrage à froid, `MaxMemoryUsed`, coût sur deux semaines ; comparer aux ESTIMATIONS de la spec §5.5.
 6. Seulement ensuite : `certificat_valide = true`, CNAME `raido`, `RUNERIDE_RAIDO_URL` dans le `.env` de production.
 
+## 2.7 Jalon J2 : pipeline du score scénique (21/10/2026)
+
+**Fait** : l'extraction et le calcul. **Pas fait** : la calibration, qui demande tes 10 balades de référence (spec §10, J2). Les poids ci-dessous sont
+**provisoires**.
+
+### Ce que le pipeline lit (`raido-graphe construire`)
+
+| Source OSM | Rôle | Rhône-Alpes (extrait du 18/10) |
+|---|---|---|
+| nœuds `mountain_pass=yes`, ou `natural=saddle` nommé « Col … », « Cormet … », « Pas … » | cols | 2 029 cols nommés |
+| nœuds `tourism=viewpoint` ; `natural=peak` | panoramas ; sommets | 810 ; 3 923 nommés |
+| ways `natural=water` ; `landuse=forest` ou `natural=wood` ; `leisure=nature_reserve`, `boundary=national_park` ou `protected_area` | eau, forêts, parcs : contour échantillonné tous les 120 m | 666 803 points et échantillons au total |
+| ways `landuse=industrial\|commercial\|retail` | **pénalité** | idem |
+| relations `type=route` avec `route=motorbike`, ou `route=road` avec `tourism` ou `scenic=yes` | routes touristiques : bonus à leurs ways | 4 078 ways |
+
+Score d'un tronçon (0 à 1) : échantillons le long du tronçon (un tous les 150 m) ; pour chaque genre, part des échantillons à moins de **300 m**
+d'un point de ce genre ; bonus = 1 − Π(1 − poids × part), relevé par l'appartenance à une route touristique, moins la pénalité de zone d'activité.
+Poids par défaut : col 0,9 ; panorama 0,7 ; sommet 0,4 ; eau 0,35 ; forêt 0,3 ; parc 0,3 ; route touristique 0,5 ; activité −0,5.
+**Réglage sans recompiler** : `raido-graphe construire … --poids poids.json` (champs facultatifs, une faute de frappe est refusée) ;
+`--dump-poi fichier.geojson` écrit les points nommés pour vérifier à la main. Format du graphe inchangé (version 3) : un nouveau graphe se
+publie tel quel, sans toucher à la Lambda.
+
+Mesuré sur Rhône-Alpes : construction **8,5 s**, 1,7 Go de mémoire ; **33,1 %** des arcs ont un score positif, moyenne 0,113. Galibier, Iseran,
+Glandon, Madeleine, Télégraphe, Roselend et Col de Porte sont présents. Le Lautaret et le Granon n'y sont pas : ils sont **hors de l'extrait**
+(région PACA).
+
+### Dans le moteur
+
+Le classement des 24 candidats de boucle tient désormais compte du score scénique moyen, proportionnellement au curseur « scénique »
+(jusqu'à 3 points de note à 4/4, comme la sinuosité l'était déjà).
+
+### Ce que la mesure montre, honnêtement
+
+- **Le curseur change peu les boucles.** Six départs alpins, boucles de 120 km, scénique 0 contre 4 : score scénique moyen 0,23 → 0,27 ; sur le
+  même graphe, 97,8 % de la boucle à 100 m près est commune. La cause est structurelle : une boucle est bâtie sur trois points de passage posés
+  sur un triangle selon un cap ; entre ces points A\* n'a que peu d'alternatives. Les 24 candidats se ressemblent et leurs scores scéniques
+  diffèrent peu. **Atteindre « les 10 références dans les 3 premiers candidats » demandera probablement de placer des points de passage sur les
+  attracteurs** (cols, panoramas), proche du jalon J5 (étapes) : à décider avec la calibration.
+- **Distance des boucles** : sur 24 départs, 25 km, nouveau graphe contre ancien : |écart| moyen 6,1 → 7,2 % à découverte 0, 9,4 → 9,2 % à 2, 10,1 → 9,9 % à 4 ;
+  60 km (12 départs) 3,4 → 4,1 % à 0. Dans le bruit de la mesure, avec une légère tendance à la hausse à 25 km sans découverte.
+- **Limites de l'extraction** : les relations `multipolygon` (grandes forêts, parcs nationaux souvent saisis ainsi) ne sont pas lues, seuls les ways
+  étiquetés directement le sont ; seuls les contours comptent (une route à l'intérieur d'une grande forêt n'en profite pas) ; **pas de relief** : la
+  BD ALTI de l'IGN n'est pas encore intégrée, donc ni dénivelé relatif ni bonus « route de montagne ».
+
+### Calibrer avec tes balades : `rust/tools/evaluer-references.py`
+
+```sh
+# un dossier de fichiers .gpx (une trace chacun), un graphe construit ; essaie des jeux de poids (chacun reconstruit un graphe, ≈ 9 s)
+python3 -I rust/tools/evaluer-references.py ~/references donnees/graphe/rhone-alpes --poids a.json b.json --scenique 4
+```
+
+Pour chaque référence, le premier point sert de départ et la longueur de distance cible ; Raido calcule les 3 premières variantes ; la référence
+« sort » si l'une couvre au moins **70 %** de sa longueur à moins de **100 m** (`--seuil`, `--rayon`). Critère de la spec : 7 références sur 10.
+**Ces deux seuils sont ma lecture du critère**, à valider avec toi. Essai de l'outil avec des références synthétiques : deux boucles retrouvées à
+99 et 100 %, une trace décalée de 2 km à 4 % (non retrouvée), une boucle recalculée à une distance un peu différente à 67 %.
+
 ## 3. Ce qui n'a pas été fait, honnêtement
 
 - **Aucune mesure sur AWS** : ni Lambda, ni S3 réel (le chargement « à froid » est mesuré sur disque local et sur un faux S3 en boucle locale, §2.5 ; S3 en région ajoutera de l'ordre de 0,5 à 1 s pour 54 Mo : ESTIMATION). Le packaging arm64 est fait (§2.5), pas exécuté sur arm64.
