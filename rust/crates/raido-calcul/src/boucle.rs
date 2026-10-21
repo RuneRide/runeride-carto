@@ -36,6 +36,9 @@ pub fn noeud_accroche(g: &Graphe, p: &Preferences, lat: f64, lon: f64, max_m: f6
 
 const MIN_CONNEXE: usize = 60;
 
+/// Nombre maximal de passes de raffinement de la distance des meilleurs candidats.
+const PASSES_RAFFINEMENT: usize = 3;
+
 /// Parcours en largeur borné : le nœud atteint-il au moins `MIN_CONNEXE` nœuds ?
 fn connexe(g: &Graphe, p: &Preferences, depart: NoeudId) -> bool {
     let vide = HashSet::new();
@@ -124,20 +127,33 @@ pub fn balade(g: &Graphe, p: &Preferences, depart: NoeudId, pb: &ParametresBoucl
     let mut candidats: Vec<Candidat> = essais.par_iter().filter_map(|&(cap, f)| petale(cap, f)).collect();
     candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Raffinement : les trois meilleurs trop longs ou trop courts (> 4 %) sont rejoués
-    // avec un rayon corrigé du rapport visé / obtenu ; on garde le meilleur des deux.
-    let a_raffiner: Vec<(usize, f64, f64)> = candidats
-        .iter()
-        .take(3)
-        .enumerate()
-        .filter(|(_, c)| ((c.longueur_m as f64 - pb.distance_m) / pb.distance_m).abs() > 0.04)
-        .map(|(i, c)| (i, c.cap_deg, c.facteur * pb.distance_m / c.longueur_m as f64))
-        .collect();
-    let raffines: Vec<(usize, Candidat)> =
-        a_raffiner.par_iter().filter_map(|&(i, cap, f)| petale(cap, f).map(|c| (i, c))).collect();
-    for (i, c) in raffines {
-        if c.note < candidats[i].note {
-            candidats[i] = c;
+    // Raffinement : les trois meilleurs trop longs ou trop courts (> 4 %) sont rejoués avec un rayon corrigé du rapport
+    // visé / obtenu ; on garde le meilleur des deux. Jusqu'à `PASSES_RAFFINEMENT` passes : les pénalités (découverte,
+    // recouvrement) rendent la distance peu proportionnelle au rayon, une seule correction ne suffit pas toujours
+    // sur les petites boucles.
+    for _ in 0..PASSES_RAFFINEMENT {
+        let a_raffiner: Vec<(usize, f64, f64)> = candidats
+            .iter()
+            .take(3)
+            .enumerate()
+            .filter(|(_, c)| ((c.longueur_m as f64 - pb.distance_m) / pb.distance_m).abs() > 0.04)
+            .map(|(i, c)| (i, c.cap_deg, c.facteur * pb.distance_m / c.longueur_m as f64))
+            .collect();
+        if a_raffiner.is_empty() {
+            break;
+        }
+        let raffines: Vec<(usize, Candidat)> =
+            a_raffiner.par_iter().filter_map(|&(i, cap, f)| petale(cap, f).map(|c| (i, c))).collect();
+        let mut amelioree = false;
+        for (i, c) in raffines {
+            if c.note < candidats[i].note {
+                candidats[i] = c;
+                amelioree = true;
+            }
+        }
+        candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
+        if !amelioree {
+            break;
         }
     }
     candidats.sort_by(|a, b| a.note.partial_cmp(&b.note).unwrap_or(std::cmp::Ordering::Equal));
