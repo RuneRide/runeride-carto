@@ -284,9 +284,11 @@ exercée contre un vrai serveur), le `POST` derrière CloudFront (`x-amz-content
 
 ### Plan d'essai sur AWS (à faire, chaque étape sur accord explicite, rien d'exécuté au 21/10/2026)
 
-**Préparé en local, sans AWS** : zip arm64 reconstruit le 21/10/2026 par `rust/tools/package-lambda.sh` (1 361 588 octets,
-SHA-256 `d9d30aa438ed409fe8e7c3bc07f98ab8af34a033106c33b99da186ad2e199e78`, binaire 2,6 Mo), contenant la route privée `/v1/apparier`, les
-préférences et les passes de raffinement. **Non exécuté sur arm64** : aucune émulation sur ce poste, seul x86_64 a tourné (le doute
+**Préparé en local, sans AWS** : zip arm64 reconstruit le 21/10/2026 au soir par `rust/tools/package-lambda.sh` (1 372 579 octets,
+SHA-256 `ce50ad86d2eea080016043e7992b9a101c93e9840f4f9d133cd8f02dc7fdee8a`, binaire 2,6 Mo), contenant la route privée `/v1/apparier`, les
+préférences, les passes de raffinement et les boucles sur cols et panoramas (le zip du matin, `d9d30aa4…`, est périmé) ; graphe Rhône-Alpes à jour
+dans `donnees/graphe/rhone-alpes-j2/` (112 Mo, 25 tuiles, `index.json` et `attracteurs.json` ; `donnees/` est hors Git ; l'ancien graphe est conservé tel quel) :
+**à publier avec `aws s3 sync` du dossier entier**, le fichier `attracteurs.json` y compris. **Non exécuté sur arm64** : aucune émulation sur ce poste, seul x86_64 a tourné (le doute
 sur le libm de musl arm64, ±1 code, reste à lever sur Graviton). Module Terraform : `fmt`, `init -backend=false` et `validate` OK, avec la
 variable sensible `cle_service` (`runeride-cloud` #4).
 
