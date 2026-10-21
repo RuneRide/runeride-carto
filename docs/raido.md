@@ -282,16 +282,32 @@ vers le PHP), hors v1. Non tranché au 19/10/2026.
 Ce que cet essai ne montre pas : le téléchargement du JWKS par HTTPS (`RAIDO_JWKS_URL`, pile TLS en Rust pur, non
 exercée contre un vrai serveur), le `POST` derrière CloudFront (`x-amz-content-sha256`), les temps réels sur arm64.
 
-### Plan d'essai sur AWS (à faire, chaque étape sur accord explicite, rien d'exécuté au 19/10/2026)
+### Plan d'essai sur AWS (à faire, chaque étape sur accord explicite, rien d'exécuté au 21/10/2026)
 
-1. `rust/tools/package-lambda.sh` (zip arm64) et `raido-graphe construire` sur l'extrait ; `terraform plan` du module
-   `runeride-cloud/terraform/raido/` avec `jeton_emetteur = https://app.runeride.fr` (lire le plan : première fois).
-2. `terraform apply` sans le domaine, `publier_graphe`, `GET /v1/sante` sur l'adresse CloudFront : vérifie le TLS vers
-   S3 **et** le chargement du JWKS depuis `app.runeride.fr` (journal `{"evenement":"jwks","cles":1}`).
-3. Depuis un compte RuneRide de test : `POST /api/balade/jeton` puis le `POST /v1/balade` du README du module avec
-   `x-amz-content-sha256` ; rejouer les cas 06, 07 et 11 ci-dessus.
-4. Mesurer démarrage à froid, `MaxMemoryUsed`, coût sur deux semaines ; comparer aux ESTIMATIONS de la spec §5.5.
-5. Seulement ensuite : `certificat_valide = true`, CNAME `raido`, `RUNERIDE_RAIDO_URL` dans le `.env` de production.
+**Préparé en local, sans AWS** : zip arm64 reconstruit le 21/10/2026 par `rust/tools/package-lambda.sh` (1 361 588 octets,
+SHA-256 `d9d30aa438ed409fe8e7c3bc07f98ab8af34a033106c33b99da186ad2e199e78`, binaire 2,6 Mo), contenant la route privée `/v1/apparier`, les
+préférences et les passes de raffinement. **Non exécuté sur arm64** : aucune émulation sur ce poste, seul x86_64 a tourné (le doute
+sur le libm de musl arm64, ±1 code, reste à lever sur Graviton). Module Terraform : `fmt`, `init -backend=false` et `validate` OK, avec la
+variable sensible `cle_service` (`runeride-cloud` #4).
+
+**Décisions et réglages à avoir en main avant le premier `apply`**
+
+| Sujet | Valeur proposée |
+|---|---|
+| Clé de service | 32 caractères au moins (`openssl rand -base64 36`), dans `TF_VAR_cle_service` et dans `RUNERIDE_RAIDO_CLE_SERVICE` côté application, jamais dans Git ; sans clé, la route `/v1/apparier` n'existe pas et la découverte reste inactive |
+| Émetteur du jeton | `jeton_emetteur = https://app.runeride.fr` (= `RUNERIDE_BASE_URL` de l'application), `jeton_audience = raido` |
+| Adresse de Raido côté application | `RUNERIDE_RAIDO_URL=https://raido.runeride.fr` **seulement après** le rattachement du domaine ; avant cela la PWA dit que le calculateur n'est pas en service |
+| Migrations de l'application | 011 à 016 à jouer à la main (`ops/app-provision.sh --migrate` passe par l'API2 Cron) avant d'ouvrir la vue Balade |
+| Coût | budget d'alerte de 5 $ du module, concurrence réservée à 10 dès que le quota du compte le permet ; **ESTIMATION < 1 $ par mois** (spec §5.5), non mesurée |
+
+**Étapes**
+
+1. Accord de Philippe, identifiants AWS du projet, état Terraform (`backend "s3"` partiel : le compartiment d'état doit exister).
+2. `terraform plan` du module `runeride-cloud/terraform/raido/` (à lire en entier : première fois), avec `jeton_emetteur = https://app.runeride.fr`.
+3. `terraform apply` sans le domaine, `publier_graphe`, `GET /v1/sante` sur l'adresse CloudFront : vérifie le TLS vers S3 **et** le chargement du JWKS depuis `app.runeride.fr` (journal `{"evenement":"jwks","cles":1}`).
+4. Depuis un compte RuneRide de test : `POST /api/balade/jeton` puis le `POST /v1/balade` du README du module avec `x-amz-content-sha256` ; rejouer les cas 06, 07 et 11 du tableau ci-dessus ; puis une synchronisation GeoRide d'un abonné de test et le journal de `/v1/apparier` (clé, `x-amz-content-sha256`).
+5. Mesurer démarrage à froid, `MaxMemoryUsed`, coût sur deux semaines ; comparer aux ESTIMATIONS de la spec §5.5.
+6. Seulement ensuite : `certificat_valide = true`, CNAME `raido`, `RUNERIDE_RAIDO_URL` dans le `.env` de production.
 
 ## 3. Ce qui n'a pas été fait, honnêtement
 
