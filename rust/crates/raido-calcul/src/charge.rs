@@ -226,6 +226,34 @@ impl Graphe {
         self.noeuds_proches(lat, lon, max_m, 1).into_iter().next()
     }
 
+    /// Arcs sortants des nœuds chargés situés à moins de `rayon_m` du point `(lat, lon)`.
+    pub fn arcs_dans_rayon(&self, lat: f64, lon: f64, rayon_m: f64) -> Vec<ArcId> {
+        let p = Point::depuis_degres(lat, lon);
+        let dlat_u = (rayon_m * 1e7 / 111_000.0) as i64;
+        let dlon_u = (dlat_u as f64 / lat.to_radians().cos().max(0.2)) as i64;
+        let mut arcs = Vec::new();
+        for (cle, v) in &self.tuiles {
+            // La clé suffit à écarter les tuiles sans rien décoder : on teste les bornes de la tuile.
+            let (s, o, n, e) = bornes_tuile(*cle);
+            let (dl, dg) = (rayon_m / 111_000.0, rayon_m / (111_000.0 * lat.to_radians().cos().max(0.2)));
+            if lat + dl < s || lat - dl > n || lon + dg < o || lon - dg > e {
+                continue;
+            }
+            let t = unsafe { rkyv::access_unchecked::<ArchivedTuile>(v) };
+            let nb = t.noeuds.len().saturating_sub(1);
+            for (i, nd) in t.noeuds[..nb].iter().enumerate() {
+                let q = Point { lat: nd.position.lat.to_native(), lon: nd.position.lon.to_native() };
+                if (q.lat as i64 - p.lat as i64).abs() > dlat_u || (q.lon as i64 - p.lon as i64).abs() > dlon_u {
+                    continue;
+                }
+                if raido_format::haversine_m(p, q) <= rayon_m {
+                    arcs.extend(self.sortants(raido_format::id_global(*cle, i as u32)).map(|(id, _)| id));
+                }
+            }
+        }
+        arcs
+    }
+
     /// Les `k` nœuds les plus proches, par distance croissante.
     pub fn noeuds_proches(&self, lat: f64, lon: f64, max_m: f64, k: usize) -> Vec<(NoeudId, f64)> {
         let p = Point::depuis_degres(lat, lon);

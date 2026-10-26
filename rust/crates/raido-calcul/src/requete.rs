@@ -14,6 +14,7 @@ use crate::astar;
 use crate::boucle::{self, ParametresBoucle};
 use crate::charge::Graphe;
 use crate::cout::{Preferences, V_MAX_MS};
+use crate::meteo::{self, FournisseurMeteo, PointMeteo, Seuils};
 use crate::{geo, polyligne};
 
 pub const ATTRIBUTION: &str = "© OpenStreetMap contributors (ODbL) · © IGN BD ALTI · Météo-France (Licence Ouverte) · Copernicus GLO-30";
@@ -73,6 +74,11 @@ pub struct Requete {
     pub vitesses: BTreeMap<String, f64>,
     /// Pause par heure de route, en minutes (0 à 30, défaut 10 : spec O3).
     pub pause_min_par_h: Option<f64>,
+    /// Seuils de la contrainte météo (spec §4.5, O2 : pluie 1 mm/h, rafales 60 km/h, froid ressenti 5 °C). Sans ce champ,
+    /// la météo n'est pas consultée.
+    pub meteo: Option<Seuils>,
+    /// Heure de départ, ISO 8601 (`2026-10-26T14:00`), pour la météo à l'heure de passage.
+    pub depart_a: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -97,6 +103,9 @@ pub struct Reponse {
     pub variante: usize,
     /// Col ou panorama sur lequel la boucle a été bâtie (curseur scénique ≥ 2), le cas échéant.
     pub passe_par: Option<String>,
+    /// Météo à l'heure de passage, point par point (présente quand la contrainte météo a été évaluée).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub meteo: Vec<PointMeteo>,
     pub avertissements: Vec<String>,
     pub graphe: GrapheInfo,
     pub mesures: Mesures,
@@ -137,6 +146,7 @@ impl Requete {
             eviter_tunnels: ev("tunnels"),
             troncons_connus: self.troncons_connus.iter().copied().collect(),
             vitesses: self.vitesses.iter().filter_map(|(n, v)| Classe::depuis_nom(n).map(|c| (c, v.min(V_MAX_MS * 3.6)))).collect(),
+            arcs_meteo: HashSet::new(),
         }
     }
 
@@ -192,6 +202,14 @@ impl Requete {
                 bail!("pause_min_par_h doit être entre 0 et 30");
             }
         }
+        if let Some(s) = &self.meteo {
+            s.verifier()?;
+        }
+        if let Some(d) = &self.depart_a {
+            if !meteo::depart_a_valide(d) {
+                bail!("depart_a doit être une date ISO 8601 (AAAA-MM-JJTHH:MM)");
+            }
+        }
         if self.troncons_connus.len() > 200_000 {
             bail!("troncons_connus trop long");
         }
@@ -222,8 +240,13 @@ fn temps_pref(g: &Graphe, p: &Preferences, arcs: &[raido_format::ArcId]) -> u64 
 /// Traite une requête de boucle (`retour`) ou de trajet (`arrivee`) ; le graphe doit déjà
 /// contenir les tuiles nécessaires ou pouvoir les charger (`precharger` est appelé ici).
 pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
+    traiter_zones(g, r, &[])
+}
+
+/// Un calcul avec des zones d'évitement météo `(lat, lon, rayon_m)` : les arcs qui en partent sont pénalisés.
+fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Result<Reponse> {
     r.verifier().map_err(|e| ErreurRequete(e.to_string()))?;
-    let p = r.preferences();
+    let mut p = r.preferences();
     let epsilon = r.epsilon.unwrap_or(1.0).clamp(1.0, 3.0);
     let d = (r.depart.lat, r.depart.lon);
     let mut avertissements = Vec::new();
@@ -243,6 +266,7 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
             return Err(ErreurRequete("trajet de plus de 400 km à vol d'oiseau : non pris en charge".into()).into());
         }
         g.precharger(geo::emprise_entre(d, a, vol * 0.3 + 10_000.0))?;
+        p.arcs_meteo = arcs_des_zones(g, zones);
         let chargement_ms = t0.elapsed().as_millis() as u64;
         let nd = boucle::noeud_accroche(g, &p, d.0, d.1, 2_000.0).ok_or_else(|| ErreurRequete("aucune route près du départ".into()))?;
         let na = boucle::noeud_accroche(g, &p, a.0, a.1, 2_000.0).ok_or_else(|| ErreurRequete("aucune route près de l'arrivée".into()))?;
@@ -262,6 +286,7 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
             variantes: 1,
             variante: 0,
             passe_par: None,
+            meteo: Vec::new(),
             avertissements,
             graphe: info(g),
             mesures: Mesures { chargement_ms, calcul_ms: t1.elapsed().as_millis() as u64, tuiles_chargees: g.nb_tuiles_chargees(), octets_charges: g.octets_charges, etats_explores: ch.noeuds_explores },
@@ -272,6 +297,7 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
     // Boucle.
     let dist = r.distance_cible_m().map_err(|e| ErreurRequete(e.to_string()))?;
     g.precharger(boucle::emprise(d.0, d.1, dist))?;
+    p.arcs_meteo = arcs_des_zones(g, zones);
     let chargement_ms = t0.elapsed().as_millis() as u64;
     let nd = boucle::noeud_accroche(g, &p, d.0, d.1, 2_000.0).ok_or_else(|| ErreurRequete("aucune route près du départ".into()))?;
     let mut pb = ParametresBoucle::pour(dist);
@@ -304,11 +330,57 @@ pub fn traiter(g: &mut Graphe, r: &Requete) -> Result<Reponse> {
         variantes: cands.len().min(3),
         variante: i,
         passe_par: c.passe_par.clone(),
+        meteo: Vec::new(),
         avertissements,
         graphe: info(g),
         mesures: Mesures { chargement_ms, calcul_ms: t1.elapsed().as_millis() as u64, tuiles_chargees: g.nb_tuiles_chargees(), octets_charges: g.octets_charges, etats_explores: c.noeuds_explores },
         attribution: ATTRIBUTION,
     })
+}
+
+fn arcs_des_zones(g: &Graphe, zones: &[(f64, f64, f64)]) -> HashSet<raido_format::ArcId> {
+    zones.iter().flat_map(|&(la, lo, rayon)| g.arcs_dans_rayon(la, lo, rayon)).collect()
+}
+
+/// Même chose que `traiter`, avec la contrainte météo (spec §4.5) quand la requête porte `meteo` : on calcule,
+/// on interroge la météo le long de la trace, on pose des zones d'évitement autour des points en infraction et
+/// on recalcule, trois calculs au plus. On rend le candidat qui a le moins de points en infraction (le premier à
+/// égalité) ; s'il en reste, l'avertissement « météo non évitable ». Sans `meteo`, ou si la météo est
+/// indisponible, le résultat est celui de `traiter` (avec un avertissement dans le second cas).
+pub fn traiter_meteo(g: &mut Graphe, r: &Requete, f: &dyn FournisseurMeteo) -> Result<Reponse> {
+    let Some(seuils) = r.meteo else { return traiter(g, r) };
+    let mut zones: Vec<(f64, f64, f64)> = Vec::new();
+    let mut meilleur: Option<(usize, Reponse)> = None;
+    for _ in 0..meteo::CALCULS_MAX {
+        let mut rep = traiter_zones(g, r, &zones)?;
+        let echantillons = meteo::echantillonner(&polyligne::decoder(&rep.trace));
+        let vitesse = rep.distance_m as f64 / rep.duree_s.max(1) as f64 * 3.6;
+        let pts = match f.par_point(&echantillons, r.depart_a.as_deref(), vitesse) {
+            Ok(p) => p,
+            Err(_) => {
+                // Pas de météo : on garde le meilleur calcul déjà obtenu, sinon celui-ci, et on le dit.
+                let mut sortie = meilleur.map(|(_, m)| m).unwrap_or(rep);
+                sortie.avertissements.push("météo indisponible : contrainte météo ignorée".into());
+                return Ok(sortie);
+            }
+        };
+        let inf = meteo::infractions(&pts, &seuils);
+        let n = inf.len();
+        let nouvelles = meteo::zones_depuis(&inf);
+        rep.meteo = pts;
+        if meilleur.as_ref().is_none_or(|(m, _)| n < *m) {
+            meilleur = Some((n, rep));
+        }
+        if n == 0 {
+            break;
+        }
+        zones.extend(nouvelles);
+    }
+    let (n, mut rep) = meilleur.expect("au moins un calcul");
+    if n > 0 {
+        rep.avertissements.push(format!("météo non évitable : {n} point(s) de la trace dépassent les seuils"));
+    }
+    Ok(rep)
 }
 
 fn info(g: &Graphe) -> GrapheInfo {
@@ -372,6 +444,19 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn meteo_et_depart_a_sont_lus_et_valides() {
+        let r = requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true,"distance_km":30,"meteo":{"pluie_mmh":2},"depart_a":"2026-10-26T14:00"}"#);
+        assert!(r.verifier().is_ok());
+        let s = r.meteo.unwrap();
+        assert_eq!((s.pluie_mmh, s.rafales_kmh, s.froid_c), (2.0, 60.0, 5.0), "seuils absents : défauts O2");
+        for mauvais in [r#""meteo":{"rafales_kmh":5}"#, r#""depart_a":"demain""#] {
+            let r = requete(&format!(r#"{{"depart":{{"lat":45.0,"lon":5.0}},"retour":true,"distance_km":30,{mauvais}}}"#));
+            assert!(r.verifier().is_err(), "{mauvais}");
+        }
+        assert!(requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true}"#).meteo.is_none(), "sans meteo : pas de contrainte");
+    }
 
     #[test]
     fn requete_minimale() {

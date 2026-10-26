@@ -69,6 +69,7 @@ impl Prefs {
             eviter_tunnels: false,
             troncons_connus: HashSet::new(),
             vitesses: Vec::new(),
+            arcs_meteo: HashSet::new(),
         }
     }
 }
@@ -105,6 +106,13 @@ enum Commande {
         /// Écart-type du bruit gaussien ajouté à chaque point, en mètres.
         #[arg(long, default_value_t = 8.0)]
         bruit_m: f64,
+    },
+    /// Rejoue une requête JSON (`POST /v1/balade`) et affiche la réponse ; `--meteo-simulee` fournit des zones de
+    /// météo fixes (`{"zones":[{"lat":..,"lon":..,"rayon_m":..,"pluie_mmh":..}]}`) pour la contrainte météo (J5).
+    Requete {
+        fichier: PathBuf,
+        #[arg(long)]
+        meteo_simulee: Option<PathBuf>,
     },
     Banc {
         #[arg(long, default_value_t = 20)]
@@ -151,6 +159,17 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let mut g = Graphe::ouvrir(&cli.graphe)?;
     match cli.commande {
+        Commande::Requete { fichier, meteo_simulee } => {
+            let r: raido_calcul::requete::Requete = serde_json::from_slice(&std::fs::read(&fichier)?)?;
+            let f: raido_calcul::meteo::FournisseurSimule = match meteo_simulee {
+                Some(m) => serde_json::from_slice(&std::fs::read(m)?)?,
+                None => Default::default(),
+            };
+            let t0 = Instant::now();
+            let rep = raido_calcul::requete::traiter_meteo(&mut g, &r, &f)?;
+            eprintln!("calcul : {} ms", t0.elapsed().as_millis());
+            println!("{}", serde_json::to_string_pretty(&rep)?);
+        }
         Commande::Trajet { de, a, prefs } => {
             let (d, ar) = (point(&de)?, point(&a)?);
             let t0 = Instant::now();

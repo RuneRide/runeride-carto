@@ -24,6 +24,8 @@ pub struct Preferences {
     pub troncons_connus: HashSet<(i64, u16)>,
     /// Vitesses moyennes réglées par l'utilisateur (km/h) pour certaines classes ; les autres gardent celles du graphe.
     pub vitesses: Vec<(Classe, f64)>,
+    /// Arcs situés dans une zone météo à éviter (spec §4.5) : coût ×6, jamais exclus.
+    pub arcs_meteo: HashSet<ArcId>,
 }
 
 impl Preferences {
@@ -65,6 +67,10 @@ pub fn poids(cran: u8) -> f64 {
 /// Vitesse maximale du graphe (m/s), pour l'heuristique : 110 km/h.
 pub const V_MAX_MS: f64 = 110.0 / 3.6;
 
+/// Multiplicateur du coût d'un arc dans une zone météo à éviter : forte pénalité (spec §4.5), pas une exclusion,
+/// pour que la balade reste calculable quand la zone ne se contourne pas. Il est ≥ 1 : A* reste admissible.
+pub const FACTEUR_ZONE_METEO: f64 = 6.0;
+
 /// Coût d'un arc en décisecondes pondérées ; `None` si l'arc est exclu.
 /// `penalises` : arcs à éviter (recouvrement d'une boucle), coût ×4.
 #[inline]
@@ -98,6 +104,9 @@ pub fn cout(p: &Preferences, id: ArcId, a: &ArchivedArc, penalises: &HashSet<Arc
     }
     if penalises.contains(&id) {
         facteur *= 4.0;
+    }
+    if p.arcs_meteo.contains(&id) {
+        facteur *= FACTEUR_ZONE_METEO;
     }
     Some(a.temps_ds.to_native() as f64 * p.echelle_temps(classe) * facteur)
 }
