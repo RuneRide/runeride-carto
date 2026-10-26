@@ -186,7 +186,7 @@ valeurs que la PWA lit dans `GET /api/balade/preferences`. Le temps de chaque ar
 sert aussi à convertir une durée demandée en distance. Les vitesses réglées sont **ramenées à 110 km/h** : c'est ce qui garde
 le temps à vol d'oiseau à 110 km/h admissible pour A\*. Limite : le plafond `maxspeed` déjà appliqué dans le temps de base du
 graphe n'est pas relevé (réglage à la hausse sur une route limitée : sans effet), et la conversion durée → distance reste à 55 km/h.
-Les seuils météo ne sont pas lus (météo : jalon J5). Classe inconnue ou valeur hors bornes : `422 calcul_impossible`.
+Les seuils météo sont lus depuis le champ `meteo` (voir « Contrainte météo (J5) » ci-dessous). Classe inconnue ou valeur hors bornes : `422 calcul_impossible`.
 
 Mesuré sur le graphe Rhône-Alpes, boucle de 60 km depuis Grenoble, mêmes préférences de caractère :
 
@@ -394,6 +394,43 @@ Pour chaque référence, le premier point sert de départ et la longueur de dist
 - Pas de graphe grossier pour les longs trajets (spec §5.3) : Lyon → Grenoble passe très bien sans, la question se posera pour des trajets > 300 km.
 - Restrictions avec pivot « way » ignorées (13 %) ; pas de ferries ; `access` conditionnel non lu ; pas de prise en compte de `maxweight`/`maxheight` (sans objet à moto).
 - Plausibilité des tracés : **validée par le titulaire le 18/10/2026** sur la visionneuse HTML (Leaflet + fond OSM) pour les boucles depuis Grenoble, Lyon et Annecy et le trajet Lyon → Grenoble ; pas encore de comparaison chiffrée avec des balades de référence (J2).
-- Pas d'étapes, d'autonomie carburant, de météo ni de découverte par référence S3 dans le moteur : jalons J4 à J6 (la découverte par `troncons_connus` dans le corps de la requête existe). Côté PHP, J4 a livré le jeton, les quotas et les balades enregistrées (§2.6) ; la vue PWA `#/balade` reste à faire.
+- Pas d'étapes, d'autonomie carburant, de source météo réelle ni de découverte par référence S3 dans le moteur : jalons J4 à J6 (la découverte par `troncons_connus` dans le corps de la requête existe). Côté PHP, J4 a livré le jeton, les quotas et les balades enregistrées (§2.6) ; la vue PWA `#/balade` reste à faire.
 - Pas de test d'intégration sur un graphe jouet (seulement 13 tests unitaires sur le format, l'extraction et les scores).
 - Une seule machine, un seul extrait, caches disque chauds pour les bancs « à chaud ».
+
+
+### Contrainte météo (J5, 26/10/2026)
+
+Le moteur sait évaluer et contourner une météo défavorable (spec §4.5, U5), mais **aucune source météo réelle n'est branchée** :
+`POST /v1/route` de RuneRide Météo (jalon J6 de runeride-weather) n'existe pas encore (risque R5). La Lambda utilise donc
+`FournisseurAbsent` : une requête avec `meteo` rend la balade sans contrainte et l'avertissement « météo indisponible : contrainte
+météo ignorée ».
+
+- **Requête** : `meteo` {`pluie_mmh` (0–50, défaut 1), `rafales_kmh` (10–200, défaut 60), `froid_c` (−30 à 30, défaut 5)} : les
+  défauts de la spec O2 ; `depart_a` : ISO 8601 (`AAAA-MM-JJTHH:MM`, validé grossièrement, le fuseau est laissé à la météo). Sans
+  `meteo`, la météo n'est jamais consultée. Hors bornes : 422 `calcul_impossible`.
+- **Boucle** (`requete::traiter_meteo`) : calcul → trace échantillonnée (≥ 1 km, ≤ 500 points) → `FournisseurMeteo::par_point` →
+  points en infraction (pluie ou rafales **au-dessus**, froid ressenti **en dessous** du seuil) → zones d'évitement (rayon 3 km,
+  un point à moins d'un demi-rayon d'une zone existante n'en crée pas) → recalcul. **Trois calculs au plus** ; on rend celui qui a
+  le moins de points en infraction (le premier à égalité). S'il en reste : « météo non évitable : N point(s)… ».
+- **Zone** : le coût des arcs sortant d'un nœud situé dans la zone est multiplié par 6 (`cout::FACTEUR_ZONE_METEO`) : pénalité forte,
+  pas exclusion, pour qu'une zone qu'on ne peut pas contourner donne quand même une balade. Le facteur est ≥ 1 : A\* reste admissible.
+  Approximation : on teste les nœuds de départ des arcs, pas leur milieu (spec §4.5 dit « milieu ») ; sur un graphe routier, la
+  différence est de l'ordre de la longueur d'un arc.
+- **Réponse** : `meteo` [{lat, lon, distance_m, pluie_mmh, rafales_kmh, froid_c}] quand la météo a été consultée.
+- **Source simulée** : `FournisseurSimule` (zones circulaires fixes) et la commande `raido-calcul requete <req.json> --meteo-simulee
+  <zones.json>`.
+
+Mesuré sur le graphe Rhône-Alpes, boucle de 50 km depuis Annecy, pluie simulée de 4 mm/h au quart du tracé de base :
+
+| Zone de pluie | Résultat | Calcul |
+|---|---|---|
+| rayon 2,5 km | 0 point dans la zone, 50,8 km (base 54,8 km) | 0,35 s |
+| rayon 6 km | 0 point dans la zone, 49,9 km | 0,64 s |
+| rayon 100 km (couvre tout) | « météo non évitable : 55 point(s) », 54,6 km | 1,2 s |
+
+Hors de ce que ça prouve : la météo est celle que je simule (temps constant, pas d'heure de passage ni de prévision) ; le
+dépassement de seuil est testé aux seuls points échantillonnés ; l'objectif « avec contrainte météo < 12 s » (spec §9) est tenu
+avec ce fournisseur instantané, pas avec un appel réseau à `/v1/route`. Reste pour brancher la vraie météo : un `FournisseurMeteo`
+HTTP (Lambda → CloudFront de la météo, `x-amz-content-sha256`), son origine dans la CSP, et la lecture des seuils enregistrés
+(`seuils_meteo_json`, migration 015) par la PWA.

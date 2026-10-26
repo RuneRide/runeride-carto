@@ -196,7 +196,7 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                         }
                     }
                     let mut g = ctx.graphe.lock().unwrap_or_else(|e| e.into_inner());
-                    match requete::traiter(&mut g, &r) {
+                    match requete::traiter_meteo(&mut g, &r, &raido_calcul::meteo::FournisseurAbsent) {
                         Ok(rep) => reponse(200, serde_json::to_value(&rep).unwrap_or(Value::Null)),
                         Err(e) if requete::est_erreur_requete(&e) => erreur(422, &e.to_string(), "calcul_impossible"),
                         Err(e) => {
