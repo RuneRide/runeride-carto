@@ -307,9 +307,11 @@ mod tests {
         let t = jeton(&b, bon.clone(), "autre");
         assert_eq!(v.verifier(&t, 1500), Err(ErreurJeton::CleInconnue));
         // signature altérée
-        let mut t = jeton(&b, bon.clone(), &b.kid);
-        let dernier = t.pop().unwrap();
-        t.push(if dernier == 'A' { 'B' } else { 'A' });
+        // un caractère du milieu : le dernier ne porte parfois que des bits de bourrage et laisserait la signature valide
+        let mut t: Vec<char> = jeton(&b, bon.clone(), &b.kid).chars().collect();
+        let i = t.len() - 20;
+        t[i] = if t[i] == 'A' { 'B' } else { 'A' };
+        let t: String = t.into_iter().collect();
         assert_eq!(v.verifier(&t, 1500), Err(ErreurJeton::SignatureInvalide));
         // revendications altérées (signature d'un autre contenu)
         let t = jeton(&b, bon, &b.kid);
