@@ -142,11 +142,13 @@ pub struct PoidsScenique {
     pub route_touristique: f64,
     /// Pénalité en zone industrielle ou commerciale (retranchée du bonus).
     pub activite: f64,
+    /// Poids du terme « route de montagne » (altitude et dominance, `relief::Mnt::terme_relief`) ; sans effet sans `--relief`.
+    pub relief: f64,
 }
 
 impl Default for PoidsScenique {
     fn default() -> Self {
-        PoidsScenique { rayon_m: 300.0, echantillon_m: 150.0, col: 0.9, panorama: 0.7, sommet: 0.4, eau: 0.35, foret: 0.3, parc: 0.3, route_touristique: 0.5, activite: 0.5 }
+        PoidsScenique { rayon_m: 300.0, echantillon_m: 150.0, col: 0.9, panorama: 0.7, sommet: 0.4, eau: 0.35, foret: 0.3, parc: 0.3, route_touristique: 0.5, activite: 0.5, relief: 0.35 }
     }
 }
 

@@ -6,4 +6,5 @@
 
 pub mod construire;
 pub mod osm;
+pub mod relief;
 pub mod scores;

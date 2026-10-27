@@ -13,6 +13,7 @@ use raido_format::{
 };
 
 use crate::osm::Extrait;
+use crate::relief::Mnt;
 use crate::scores::{self, Agglomerations, PoidsScenique, Scenique};
 
 /// Arc avant attribution de son indice définitif dans sa tuile.
@@ -41,6 +42,8 @@ pub struct Statistiques {
     /// Cols et panoramas nommés écrits dans `attracteurs.json`.
     pub attracteurs: usize,
     pub somme_scenique: f64,
+    /// Arcs pour lesquels le relief a pu être évalué (tuiles du MNT présentes).
+    pub arcs_avec_relief: usize,
 }
 
 /// Construit le graphe et l'écrit dans `sortie/` ; `bornes` (sud, ouest, nord, est) limite l'emprise.
@@ -48,8 +51,13 @@ pub fn construire(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source:
     construire_avec(ex, sortie, bornes, source, PoidsScenique::default())
 }
 
-/// Comme `construire`, avec les poids du score scénique (calibration, jalon J2).
+/// Comme `construire`, avec les poids du score scénique (calibration, jalon J2) et sans relief.
 pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str, poids: PoidsScenique) -> Result<Statistiques> {
+    construire_relief(ex, sortie, bornes, source, poids, None)
+}
+
+/// Comme `construire_avec`, avec un modèle numérique de terrain : montée de chaque arc et terme de relief du score scénique.
+pub fn construire_relief(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str, poids: PoidsScenique, mnt: Option<&Mnt>) -> Result<Statistiques> {
     let mut st = Statistiques { voies: ex.voies.len(), restrictions_lues: ex.restrictions.len(), ..Default::default() };
     let dans_bornes = |lat: f64, lon: f64| bornes.is_none_or(|b| lat >= b[0] && lat <= b[2] && lon >= b[1] && lon <= b[3]);
 
@@ -90,6 +98,7 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
 
     // 3. Arcs : chaque voie est découpée aux intersections.
     let agglos = Agglomerations::nouvelle(&ex.localites);
+    let poids_relief = poids.relief;
     let scenique = Scenique::nouveau(&ex.pois, &ex.routes_touristiques, poids);
     let mut bruts: Vec<ArcBrut> = Vec::new();
     // Pour les restrictions : (nœud pivot OSM, way) → arcs entrants / sortants provisoires.
@@ -122,7 +131,17 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
             let sin = scores::sinuosite(longueur, virages);
             let milieu = pts[pts.len() / 2];
             let agglo = agglos.score(milieu);
-            let scen = scenique.score(&pts, v.id);
+            let mut scen = scenique.score(&pts, v.id);
+            // Relief : montée dans chaque sens et terme « route de montagne » ; sans MNT ou hors tuiles, rien n'est inventé.
+            let (montee_aller, montee_retour) = match mnt.and_then(|m| m.denivele(&pts)) {
+                Some((h, b)) => (h.min(u16::MAX as u32) as u16, b.min(u16::MAX as u32) as u16),
+                None => (0, 0),
+            };
+            if let Some(t) = mnt.and_then(|m| m.terme_relief(&pts, 150.0)) {
+                scen = 1.0 - (1.0 - scen) * (1.0 - poids_relief * t);
+                // un arc par sens autorisé
+                st.arcs_avec_relief += (v.sens >= 0) as usize + (v.sens <= 0) as usize;
+            }
             if scen > 0.0 {
                 st.arcs_scenique_positifs += 1;
             }
@@ -138,6 +157,7 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
                 classe: v.classe as u8,
                 drapeaux: v.drapeaux,
                 scores: [scores::en_u8(sin), scores::en_u8(scen), 0, scores::en_u8(agglo)],
+                montee_m: 0,
                 way_id: v.id,
                 segment,
                 geohash: geohash_u64(milieu.lat_deg(), milieu.lon_deg()),
@@ -149,11 +169,11 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
             let mut arriere = None;
             if v.sens >= 0 {
                 avant = Some(bruts.len());
-                bruts.push(ArcBrut { source: a, arc: Arc { cible: b, ..modele.clone() }, inverse_brut: usize::MAX, geom: geom.clone() });
+                bruts.push(ArcBrut { source: a, arc: Arc { cible: b, montee_m: montee_aller, ..modele.clone() }, inverse_brut: usize::MAX, geom: geom.clone() });
             }
             if v.sens <= 0 {
                 arriere = Some(bruts.len());
-                let mut arc = Arc { cible: a, ..modele.clone() };
+                let mut arc = Arc { cible: a, montee_m: montee_retour, ..modele.clone() };
                 // Double sens : l'arc retour partage la géométrie de l'aller (lue à l'envers).
                 // Sens unique inverse (`oneway=-1`) : pas d'aller, on stocke la géométrie retournée.
                 let geom_retour = if avant.is_some() {
@@ -328,6 +348,7 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
         tuiles: index_tuiles,
         nb_noeuds: st.intersections as u64,
         nb_arcs: st.arcs as u64,
+        relief: mnt.is_some(),
     };
     fs::write(sortie.join("index.json"), serde_json::to_string_pretty(&index)?)?;
     let attracteurs = attracteurs_de(ex, &index.bornes);

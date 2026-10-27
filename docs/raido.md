@@ -351,8 +351,8 @@ Le classement des 24 candidats de boucle tient désormais compte du score scéni
 - **Distance des boucles** : sur 24 départs, 25 km, nouveau graphe contre ancien : |écart| moyen 6,1 → 7,2 % à découverte 0, 9,4 → 9,2 % à 2, 10,1 → 9,9 % à 4 ;
   60 km (12 départs) 3,4 → 4,1 % à 0. Dans le bruit de la mesure, avec une légère tendance à la hausse à 25 km sans découverte.
 - **Limites de l'extraction** : les relations `multipolygon` (grandes forêts, parcs nationaux souvent saisis ainsi) ne sont pas lues, seuls les ways
-  étiquetés directement le sont ; seuls les contours comptent (une route à l'intérieur d'une grande forêt n'en profite pas) ; **pas de relief** : la
-  BD ALTI de l'IGN n'est pas encore intégrée, donc ni dénivelé relatif ni bonus « route de montagne ».
+  étiquetés directement le sont ; seuls les contours comptent (une route à l'intérieur d'une grande forêt n'en profite pas) ; **relief** : voir
+  « Relief (27/10/2026) » ci-dessous (Copernicus GLO-30, pas la BD ALTI de l'IGN).
 
 ### Points de passage sur les cols et panoramas (21/10/2026)
 
@@ -390,7 +390,7 @@ Pour chaque référence, le premier point sert de départ et la longueur de dist
 ## 3. Ce qui n'a pas été fait, honnêtement
 
 - **Aucune mesure sur AWS** : ni Lambda, ni S3 réel (le chargement « à froid » est mesuré sur disque local et sur un faux S3 en boucle locale, §2.5 ; S3 en région ajoutera de l'ordre de 0,5 à 1 s pour 54 Mo : ESTIMATION). Le packaging arm64 est fait (§2.5), pas exécuté sur arm64.
-- Scores **scénique** et **motard** à zéro, pas de relief (BD ALTI), pas de relations touristiques, pas de cols ni de panoramas.
+- (Historique J1) Scores **scénique** et **motard** à zéro, pas de relief, pas de relations touristiques, pas de cols ni de panoramas : le scénique, les cols et le relief existent depuis (J2, relief du 27/10/2026) ; le score motard reste à zéro.
 - Pas de graphe grossier pour les longs trajets (spec §5.3) : Lyon → Grenoble passe très bien sans, la question se posera pour des trajets > 300 km.
 - Restrictions avec pivot « way » ignorées (13 %) ; pas de ferries ; `access` conditionnel non lu ; pas de prise en compte de `maxweight`/`maxheight` (sans objet à moto).
 - Plausibilité des tracés : **validée par le titulaire le 18/10/2026** sur la visionneuse HTML (Leaflet + fond OSM) pour les boucles depuis Grenoble, Lyon et Annecy et le trajet Lyon → Grenoble ; pas encore de comparaison chiffrée avec des balades de référence (J2).
@@ -434,3 +434,32 @@ dépassement de seuil est testé aux seuls points échantillonnés ; l'objectif 
 avec ce fournisseur instantané, pas avec un appel réseau à `/v1/route`. Reste pour brancher la vraie météo : un `FournisseurMeteo`
 HTTP (Lambda → CloudFront de la météo, `x-amz-content-sha256`), son origine dans la CSP, et la lecture des seuils enregistrés
 (`seuils_meteo_json`, migration 015) par la PWA.
+
+
+### Relief (27/10/2026)
+
+Source : **Copernicus GLO-30** (30 m), 15 tuiles de 1° (N44–N46, E003–E007, 611 Mo de GeoTIFF float32 téléchargés sans compte depuis le dépôt
+public `copernicus-dem-30m`, aucun usage de ton compte AWS), converties en 371 Mo d'entiers 16 bits par `rust/tools/convertir-mnt.py` dans
+`donnees/relief/` (ignoré par git, comme le reste de `donnees/`). Choix de Philippe du 27/10/2026 ; la BD ALTI de l'IGN reste possible plus tard.
+
+- **Format 4** : `Arc.montee_m` (montée cumulée dans le sens de l'arc, m) et `Index.relief`. **Un graphe de format 3 ne se charge plus** (« format 4
+  attendu, index en 3 ») : le graphe `rhone-alpes-j2` et le zip arm64 documentés plus haut (format 3) forment une paire cohérente mais ne sont plus
+  ceux du code de `main` ; avant tout essai AWS, reconstruire graphe **et** zip (rien n'a été reconstruit ni envoyé).
+- **Construction** : `raido-graphe construire … --relief donnees/relief`. Sans `--relief`, `montee_m` = 0 et `Index.relief` = faux : la réponse n'a pas de
+  `denivele_m` (jamais un zéro trompeur). Hors des tuiles chargées, l'arc n'a ni dénivelé ni bonus. 11 s pour tout Rhône-Alpes (1,17 M arcs, 100 % évalués).
+- **Dénivelé** : altitude bilinéaire tous les 30 m, variation comptée à partir de 3 m (bruit du modèle) ; `denivele_m` = somme des `montee_m` des arcs.
+  Vérifié contre un calcul indépendant en Python sur les mêmes données : le moteur donne **5 à 11 % de moins** (Annecy 50 km : 997 m contre 1 118 m ;
+  Saint-Michel-de-Maurienne → Galibier : 2 192 m contre 2 312 m) car le seuil de bruit repart à zéro à chaque arc. Le Galibier (712 → 2 642 m) devait
+  donner au moins 1 930 m : plausible.
+- **Score scénique** : `terme_relief` = moyenne, sur des échantillons de 150 m, de ½ × altitude relative (0 à 600 m, 1 à 2 000 m) + ½ × dominance
+  (hauteur au-dessus de la moyenne de huit points à 1,5 km, 0 à niveau, 1 à +250 m), combiné par `scénique = 1 − (1 − scénique) × (1 − poids.relief × terme)`.
+  `poids.relief` = 0,35 par défaut (`--poids`). **Provisoire, non calibré.**
+- **Effet mesuré, et il est faible** : sur 4 départs (boucles de 60 km, scénique 4), le tracé est identique à 96–100 % avec ou sans le terme de relief, à 0,35
+  comme à 0,9 ; un seul départ (Bourg-Saint-Maurice) change de tracé, sans que je puisse dire s'il est meilleur. La part d'arcs au scénique positif passe de
+  33 % à 42 %. Le dénivelé est donc une information fiable de la réponse ; le terme de relief du score est en place mais n'oriente quasiment pas les boucles
+  tant qu'il n'est pas calibré sur tes 10 balades de référence.
+- **Distance des boucles** : 60 boucles de 25 km, même graine : |écart| 9,2 % sans relief, 9,0 % avec ; médiane 0,04 s dans les deux cas.
+- **Attribution** : la chaîne d'attribution cite déjà « Copernicus GLO-30 ». La licence Copernicus DEM demande, de mémoire, une mention plus précise (« Produced
+  using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA;
+  all rights reserved ») : à vérifier sur la licence avant d'afficher le dénivelé publiquement.
+- **Non fait** : pente par tronçon dans le coût, froid ressenti en altitude (spec §1), BD ALTI, relief hors de ces 15 tuiles, affichage du dénivelé dans la PWA.
