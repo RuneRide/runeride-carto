@@ -284,7 +284,14 @@ exercée contre un vrai serveur), le `POST` derrière CloudFront (`x-amz-content
 
 ### Plan d'essai sur AWS (à faire, chaque étape sur accord explicite, rien d'exécuté au 21/10/2026)
 
-**Préparé en local, sans AWS** : zip arm64 reconstruit le 21/10/2026 au soir par `rust/tools/package-lambda.sh` (1 372 579 octets,
+**Mise à jour du 27/10/2026 (format 4, relief)** : le zip et le graphe ci-dessous sont périmés. Reconstruits en local, rien envoyé à AWS :
+zip arm64 `rust/target/lambda/raido-lambda-arm64.zip` par `package-lambda.sh` (1 379 822 octets, binaire 2 651 440 octets, SHA-256
+`985dcab109c539dfc515a0d9f2816894d1d787d7d5c5884a827d1278ff428a67`, identique à la seconde construction), graphe `donnees/graphe/rhone-alpes-j3/`
+(112 Mo, 25 tuiles, relief évalué sur 100 % des arcs, `index.json` avec `relief: true`, `attracteurs.json` de 2 768 cols et panoramas ; le graphe de format 3
+`rhone-alpes-j2` est conservé tel quel). Les 13 cas de `essai-jeton-local.sh` passent sur ce graphe (x86_64 seulement ; toujours rien exécuté sur arm64).
+Ce zip contient aussi la contrainte météo (J5), qui rend l'avertissement « météo indisponible » tant qu'aucune source n'est branchée, et le dénivelé.
+
+**Préparé en local, sans AWS (21/10/2026, format 3, périmé)** : zip arm64 reconstruit le 21/10/2026 au soir par `rust/tools/package-lambda.sh` (1 372 579 octets,
 SHA-256 `ce50ad86d2eea080016043e7992b9a101c93e9840f4f9d133cd8f02dc7fdee8a`, binaire 2,6 Mo), contenant la route privée `/v1/apparier`, les
 préférences, les passes de raffinement et les boucles sur cols et panoramas (le zip du matin, `d9d30aa4…`, est périmé) ; graphe Rhône-Alpes à jour
 dans `donnees/graphe/rhone-alpes-j2/` (112 Mo, 25 tuiles, `index.json` et `attracteurs.json` ; `donnees/` est hors Git ; l'ancien graphe est conservé tel quel) :
