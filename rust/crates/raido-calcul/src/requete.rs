@@ -281,7 +281,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
             trace: polyligne::encoder(&trace),
             distance_m: ch.longueur_m,
             duree_s: duree_avec_pauses(temps_pref(g, &p, &ch.arcs), r.pause_par_heure()),
-            denivele_m: None,
+            denivele_m: denivele_de(g, &ch.arcs),
             scores: scores.scores,
             variantes: 1,
             variante: 0,
@@ -325,7 +325,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
         trace: polyligne::encoder(&trace),
         distance_m: c.longueur_m,
         duree_s: duree_avec_pauses(temps_pref(g, &p, &c.arcs), r.pause_par_heure()),
-        denivele_m: None,
+        denivele_m: denivele_de(g, &c.arcs),
         scores: Scores { recouvrement: c.recouvrement, ..scores.scores },
         variantes: cands.len().min(3),
         variante: i,
@@ -336,6 +336,11 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
         mesures: Mesures { chargement_ms, calcul_ms: t1.elapsed().as_millis() as u64, tuiles_chargees: g.nb_tuiles_chargees(), octets_charges: g.octets_charges, etats_explores: c.noeuds_explores },
         attribution: ATTRIBUTION,
     })
+}
+
+/// Montée cumulée (m) d'un chemin, ou `None` si le graphe a été construit sans relief.
+fn denivele_de(g: &Graphe, arcs: &[raido_format::ArcId]) -> Option<u32> {
+    g.index.relief.then(|| arcs.iter().filter_map(|&id| g.arc(id)).map(|a| a.montee_m.to_native() as u32).sum())
 }
 
 fn arcs_des_zones(g: &Graphe, zones: &[(f64, f64, f64)]) -> HashSet<raido_format::ArcId> {

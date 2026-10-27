@@ -13,7 +13,7 @@ use rkyv::{Archive, Deserialize, Serialize};
 /// Niveau de zoom du découpage en tuiles (z9 : ≈ 75 × 50 km en France ; z8 donnait 41 Mo pour Lyon).
 pub const ZOOM: u32 = 9;
 /// Version du format : à incrémenter à chaque changement de structure.
-pub const VERSION_FORMAT: u32 = 3;
+pub const VERSION_FORMAT: u32 = 4;
 
 /// Clé de tuile : `x << 16 | y`.
 pub type CleTuile = u32;
@@ -198,6 +198,8 @@ pub struct Arc {
     /// Sinuosité, scénique, motard, agglomération (§4.3).
     pub scores: [u8; 4],
     /// Identifiant OSM du way et indice du segment entre intersections (identifiant stable §5.3).
+    /// Montée cumulée (m) dans le sens de l'arc, 0 sans modèle de relief (graphe construit sans `--relief`).
+    pub montee_m: u16,
     pub way_id: i64,
     pub segment: u16,
     /// Géohash (précision 9) du milieu du tronçon, encodé en base 32 sur 45 bits.
@@ -239,6 +241,9 @@ pub struct Index {
     pub tuiles: Vec<TuileIndex>,
     pub nb_noeuds: u64,
     pub nb_arcs: u64,
+    /// Le graphe a été construit avec un modèle de relief : `Arc::montee_m` est renseigné.
+    #[serde(default)]
+    pub relief: bool,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]

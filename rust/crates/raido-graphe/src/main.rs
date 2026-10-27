@@ -30,12 +30,15 @@ enum Commande {
         /// Écrit en GeoJSON les cols, panoramas et sommets nommés trouvés (diagnostic, vérification à la main).
         #[arg(long)]
         dump_poi: Option<PathBuf>,
+        /// Dossier de tuiles de relief `N45E005.i16` (voir `rust/tools/convertir-mnt.py`) : montée de chaque arc et terme de relief du score scénique.
+        #[arg(long)]
+        relief: Option<PathBuf>,
     },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().commande {
-        Commande::Construire { pbf, sortie, bornes, poids, dump_poi } => {
+        Commande::Construire { pbf, sortie, bornes, poids, dump_poi, relief } => {
             let bornes = match bornes {
                 Some(b) => {
                     let v: Vec<f64> = b.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -75,7 +78,17 @@ fn main() -> Result<()> {
             }
             let t1 = Instant::now();
             let source = pbf.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default();
-            let st = raido_graphe::construire::construire_avec(&ex, &sortie, bornes, &source, poids)?;
+            let mnt = match &relief {
+                Some(d) => {
+                    let b = bornes.unwrap_or([-90.0, -180.0, 90.0, 180.0]);
+                    let t = Instant::now();
+                    let m = raido_graphe::relief::Mnt::charger(d, b)?;
+                    eprintln!("relief : {} tuile(s) chargée(s) en {:.1} s", m.nb_tuiles(), t.elapsed().as_secs_f64());
+                    Some(m)
+                }
+                None => None,
+            };
+            let st = raido_graphe::construire::construire_relief(&ex, &sortie, bornes, &source, poids, mnt.as_ref())?;
             eprintln!(
                 "graphe : {} intersections, {} arcs, {} tuiles, {:.1} Mo, restrictions {}/{} résolues, {} nœuds sans coordonnées, {} composantes ({} nœuds hors principale), en {:.1} s",
                 st.intersections,
@@ -89,6 +102,9 @@ fn main() -> Result<()> {
                 st.noeuds_hors_principale,
                 t1.elapsed().as_secs_f64()
             );
+            if mnt.is_some() {
+                eprintln!("relief : évalué sur {:.1} % des arcs", 100.0 * st.arcs_avec_relief as f64 / st.arcs.max(1) as f64);
+            }
             eprintln!("attracteurs : {} cols et panoramas nommés dans attracteurs.json", st.attracteurs);
             eprintln!(
                 "scénique : {:.1} % des arcs ont un score positif, moyenne {:.3}",
