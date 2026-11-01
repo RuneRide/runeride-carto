@@ -26,8 +26,10 @@ cas = {
     "11_gratuit_grand_decouverte": ev("/v1/balade", {"depart": dep, "distance_km": 60, "preferences": {"decouverte": 3}}, jetons["gratuit_grand"]),
     "12_abonne_grand_decouverte": ev("/v1/balade", {"depart": dep, "distance_km": 60, "preferences": {"decouverte": 3}}, jetons["abonne_grand"]),
     "13_abonne_trajet": ev("/v1/trajet", {"depart": dep, "arrivee": lyon}, jetons["abonne_grand"]),
+    "14_gratuit_petite_etapes": ev("/v1/balade", {"depart": dep, "distance_km": 20, "etapes": [lyon]}, jetons["gratuit_petite_boucle"]),
+    "15_abonne_etapes": ev("/v1/balade", {"depart": dep, "etapes": [lyon]}, jetons["abonne_grand"]),
 }
-attendu = {"01": 200, "02": 401, "03": 401, "04": 401, "05": 401, "06": 200, "07": 403, "08": 403, "09": 403, "10": 200, "11": 403, "12": 200, "13": 200}
+attendu = {"01": 200, "02": 401, "03": 401, "04": 401, "05": 401, "06": 200, "07": 403, "08": 403, "09": 403, "10": 200, "11": 403, "12": 200, "13": 200, "14": 403, "15": 200}
 for n, e in cas.items():
     json.dump(e, open(os.path.join(d, f"evt_{n}.json"), "w"))
 json.dump(attendu, open(os.path.join(d, "attendu.json"), "w"))

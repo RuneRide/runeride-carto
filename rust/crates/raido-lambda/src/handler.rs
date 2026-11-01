@@ -186,7 +186,8 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                     }
                     if let Some(rev) = &revendications {
                         if rev.est_petite_boucle() {
-                            let trop_long = !boucle || r.distance_cible_m().map_or(true, |d| d > rev.limite_km() * 1000.0);
+                            // avec des étapes, la longueur n'est connue qu'après le calcul : réservé aux jetons de grand calcul
+                            let trop_long = !boucle || !r.etapes.is_empty() || r.distance_cible_m().map_or(true, |d| d > rev.limite_km() * 1000.0);
                             if trop_long {
                                 return erreur(403, &format!("ce jeton n'autorise qu'une boucle de {:.0} km au plus", rev.limite_km()), "quota_requis");
                             }

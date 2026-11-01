@@ -77,6 +77,10 @@ pub struct Requete {
     /// Seuils de la contrainte météo (spec §4.5, O2 : pluie 1 mm/h, rafales 60 km/h, froid ressenti 5 °C). Sans ce champ,
     /// la météo n'est pas consultée.
     pub meteo: Option<Seuils>,
+    /// Étapes obligatoires, dans l'ordre (au plus 8) : la balade passe par chacune, du départ à l'arrivée (ou au départ avec
+    /// `retour`). La distance ou la durée demandée ne sert alors plus à construire la boucle : c'est le parcours qui la fixe.
+    #[serde(default)]
+    pub etapes: Vec<Coord>,
     /// Heure de départ, ISO 8601 (`2026-10-26T14:00`), pour la météo à l'heure de passage.
     pub depart_a: Option<String>,
 }
@@ -103,6 +107,9 @@ pub struct Reponse {
     pub variante: usize,
     /// Col ou panorama sur lequel la boucle a été bâtie (curseur scénique ≥ 2), le cas échéant.
     pub passe_par: Option<String>,
+    /// Étapes demandées, avec la distance parcourue (m) à leur passage (présent quand la requête avait des étapes).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub etapes: Vec<EtapeRendue>,
     /// Météo à l'heure de passage, point par point (présente quand la contrainte météo a été évaluée).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub meteo: Vec<PointMeteo>,
@@ -111,6 +118,16 @@ pub struct Reponse {
     pub mesures: Mesures,
     pub attribution: &'static str,
 }
+
+#[derive(Serialize, Clone, Debug)]
+pub struct EtapeRendue {
+    pub lat: f64,
+    pub lon: f64,
+    /// Distance parcourue depuis le départ au passage (m).
+    pub distance_m: u64,
+}
+
+pub const ETAPES_MAX: usize = 8;
 
 #[derive(Serialize, Clone, Debug)]
 pub struct GrapheInfo {
@@ -186,6 +203,12 @@ impl Requete {
         if !self.retour && self.arrivee.is_none() {
             bail!("retour (boucle) ou arrivee est obligatoire");
         }
+        if self.etapes.len() > ETAPES_MAX {
+            bail!("au plus {ETAPES_MAX} étapes");
+        }
+        if self.etapes.iter().any(|e| !ok(e)) {
+            bail!("etapes : coordonnée invalide");
+        }
         if self.variante > 2 {
             bail!("variante doit être 0, 1 ou 2");
         }
@@ -259,6 +282,10 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
         return Err(ErreurRequete("départ hors de la zone couverte par le graphe".into()).into());
     }
 
+    if !r.etapes.is_empty() {
+        return traiter_etapes(g, r, &mut p, zones, t0, epsilon);
+    }
+
     if let Some(a) = r.arrivee.filter(|_| !r.retour) {
         let a = (a.lat, a.lon);
         let vol = haversine_m(Point::depuis_degres(d.0, d.1), Point::depuis_degres(a.0, a.1));
@@ -286,6 +313,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
             variantes: 1,
             variante: 0,
             passe_par: None,
+            etapes: Vec::new(),
             meteo: Vec::new(),
             avertissements,
             graphe: info(g),
@@ -330,6 +358,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
         variantes: cands.len().min(3),
         variante: i,
         passe_par: c.passe_par.clone(),
+        etapes: Vec::new(),
         meteo: Vec::new(),
         avertissements,
         graphe: info(g),
@@ -341,6 +370,77 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
 /// Montée cumulée (m) d'un chemin, ou `None` si le graphe a été construit sans relief.
 fn denivele_de(g: &Graphe, arcs: &[raido_format::ArcId]) -> Option<u32> {
     g.index.relief.then(|| arcs.iter().filter_map(|&id| g.arc(id)).map(|a| a.montee_m.to_native() as u32).sum())
+}
+
+/// Parcours imposé par des étapes : départ → étapes → arrivée (ou départ si `retour`). Chaque tronçon est un A* ; les arcs déjà
+/// pris par les tronçons précédents sont pénalisés (coût ×4) pour éviter de refaire la même route, sans l'interdire.
+fn traiter_etapes(g: &mut Graphe, r: &Requete, p: &mut Preferences, zones: &[(f64, f64, f64)], t0: Instant, epsilon: f64) -> Result<Reponse> {
+    let d = (r.depart.lat, r.depart.lon);
+    let mut points: Vec<(f64, f64)> = vec![d];
+    points.extend(r.etapes.iter().map(|e| (e.lat, e.lon)));
+    points.push(if r.retour { d } else { r.arrivee.map(|a| (a.lat, a.lon)).unwrap_or(d) });
+    let mut vol = 0.0;
+    for w in points.windows(2) {
+        let l = geo::distance_m(w[0], w[1]);
+        if l > 400_000.0 {
+            return Err(ErreurRequete("deux points consécutifs à plus de 400 km à vol d'oiseau : non pris en charge".into()).into());
+        }
+        vol += l;
+    }
+    let (s, o, n, e) = points.iter().fold((90.0f64, 180.0f64, -90.0f64, -180.0f64), |a, q| (a.0.min(q.0), a.1.min(q.1), a.2.max(q.0), a.3.max(q.1)));
+    let marge = vol * 0.15 + 10_000.0;
+    let emprise = geo::emprise_entre((s, o), (n, e), marge);
+    if points.iter().any(|q| q.0 < g.index.bornes[0] || q.0 > g.index.bornes[2] || q.1 < g.index.bornes[1] || q.1 > g.index.bornes[3]) {
+        return Err(ErreurRequete("étape hors de la zone couverte par le graphe".into()).into());
+    }
+    g.precharger(emprise)?;
+    p.arcs_meteo = arcs_des_zones(g, zones);
+    let chargement_ms = t0.elapsed().as_millis() as u64;
+    let noms = |i: usize| if i == 0 { "le départ".to_string() } else if i <= r.etapes.len() { format!("l'étape {i}") } else { "l'arrivée".to_string() };
+    let mut noeuds = Vec::with_capacity(points.len());
+    for (i, q) in points.iter().enumerate() {
+        let n = boucle::noeud_accroche(g, p, q.0, q.1, 2_000.0).ok_or_else(|| ErreurRequete(format!("aucune route près de {}", noms(i))))?;
+        noeuds.push(n);
+    }
+    let t1 = Instant::now();
+    let mut arcs: Vec<raido_format::ArcId> = Vec::new();
+    let mut pris: HashSet<raido_format::ArcId> = HashSet::new();
+    let mut cumul: Vec<u64> = Vec::new();
+    let mut longueur = 0u64;
+    let mut explores = 0usize;
+    for (i, w) in noeuds.windows(2).enumerate() {
+        let ch = astar::chemin(g, p, w[0], w[1], &pris, epsilon).ok_or_else(|| ErreurRequete(format!("aucun chemin de {} à {} avec ces contraintes", noms(i), noms(i + 1))))?;
+        pris.extend(ch.arcs.iter().copied());
+        // les arcs inverses comptent aussi : revenir par la même route en sens inverse est ce qu'on veut éviter
+        pris.extend(ch.arcs.iter().filter_map(|&id| g.arc(id).map(|a| a.inverse.to_native())).filter(|&x| x != raido_format::ID_NUL));
+        longueur += ch.longueur_m;
+        explores += ch.noeuds_explores;
+        cumul.push(longueur);
+        arcs.extend(ch.arcs);
+    }
+    let trace = astar::trace(g, &arcs, noeuds[0]);
+    let scores = scores_de(g, &arcs, p);
+    let mut avertissements = Vec::new();
+    if scores.revetement_inconnu > 0.10 {
+        avertissements.push(format!("revêtement inconnu sur {:.0} % du tracé", scores.revetement_inconnu * 100.0));
+    }
+    let etapes = r.etapes.iter().enumerate().map(|(i, e)| EtapeRendue { lat: e.lat, lon: e.lon, distance_m: cumul[i] }).collect();
+    Ok(Reponse {
+        trace: polyligne::encoder(&trace),
+        distance_m: longueur,
+        duree_s: duree_avec_pauses(temps_pref(g, p, &arcs), r.pause_par_heure()),
+        denivele_m: denivele_de(g, &arcs),
+        scores: scores.scores,
+        variantes: 1,
+        variante: 0,
+        passe_par: None,
+        etapes,
+        meteo: Vec::new(),
+        avertissements,
+        graphe: info(g),
+        mesures: Mesures { chargement_ms, calcul_ms: t1.elapsed().as_millis() as u64, tuiles_chargees: g.nb_tuiles_chargees(), octets_charges: g.octets_charges, etats_explores: explores },
+        attribution: ATTRIBUTION,
+    })
 }
 
 fn arcs_des_zones(g: &Graphe, zones: &[(f64, f64, f64)]) -> HashSet<raido_format::ArcId> {
@@ -461,6 +561,17 @@ mod tests {
             assert!(r.verifier().is_err(), "{mauvais}");
         }
         assert!(requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true}"#).meteo.is_none(), "sans meteo : pas de contrainte");
+    }
+
+    #[test]
+    fn etapes_sont_lues_et_validees() {
+        let r = requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true,"etapes":[{"lat":45.1,"lon":5.2},{"lat":45.3,"lon":5.1}]}"#);
+        assert!(r.verifier().is_ok(), "pas de distance ni de durée : le parcours la fixe");
+        assert_eq!(r.etapes.len(), 2);
+        assert!(requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true}"#).etapes.is_empty(), "par défaut : aucune étape");
+        let neuf = format!(r#"{{"depart":{{"lat":45.0,"lon":5.0}},"retour":true,"etapes":[{}]}}"#, vec![r#"{"lat":45.1,"lon":5.2}"#; 9].join(","));
+        assert!(requete(&neuf).verifier().is_err(), "au plus {ETAPES_MAX} étapes");
+        assert!(requete(r#"{"depart":{"lat":45.0,"lon":5.0},"retour":true,"etapes":[{"lat":95.0,"lon":5.2}]}"#).verifier().is_err(), "coordonnée invalide");
     }
 
     #[test]

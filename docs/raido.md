@@ -470,3 +470,20 @@ public `copernicus-dem-30m`, aucun usage de ton compte AWS), converties en 371 M
   using Copernicus WorldDEM-30 © DLR e.V. 2010-2014 and © Airbus Defence and Space GmbH 2014-2018 provided under COPERNICUS by the European Union and ESA;
   all rights reserved ») : à vérifier sur la licence avant d'afficher le dénivelé publiquement.
 - **Non fait** : pente par tronçon dans le coût, froid ressenti en altitude (spec §1), BD ALTI, relief hors de ces 15 tuiles, affichage du dénivelé dans la PWA.
+
+### Étapes (01/11/2026)
+
+`POST /v1/balade` et `/v1/trajet` acceptent `etapes` : jusqu'à 8 points `{lat, lon}` à traverser dans l'ordre, du départ à l'arrivée (ou au
+départ avec `retour`). Le parcours fixe alors la longueur : `distance_km` et `duree_min` ne servent plus (et ne sont pas exigés).
+- **Calcul** (`requete::traiter_etapes`) : un A\* par tronçon entre points consécutifs ; les arcs déjà pris par les tronçons précédents
+  (et leurs inverses) coûtent ×4, pour ne pas refaire la même route sans l'interdire. Une seule proposition (`variantes` = 1).
+- **Réponse** : `etapes` [{lat, lon, `distance_m` cumulée au passage}] ; dénivelé, scores, avertissements comme d'habitude.
+- **Jetons** : un jeton de petite boucle (25 km) est refusé avec `etapes` (`403 quota_requis`), la longueur n'étant connue qu'après le calcul ;
+  les jetons de grand calcul l'acceptent (un calcul décompté).
+- **Erreurs** (422) : plus de 8 étapes ou coordonnée invalide, deux points consécutifs à plus de 400 km, aucune route à moins de 2 km (3 km
+  au second essai) d'un point, aucun chemin entre deux points avec les évitements demandés.
+- **Mesuré** (graphe Rhône-Alpes `rhone-alpes-j3`) : Annecy → Thônes → Albertville → Annecy, scénique et sinuosité 2 : 105 km, dénivelé 1 719 m, 43 ms
+  de calcul ; 2 % des cellules de 100 m traversées deux fois. `essai-jeton-local.sh` : 15 cas (les 13 d'avant + petite boucle avec étapes refusée,
+  abonné avec étapes accepté).
+- **Pas fait** : réordonner les étapes, étapes dans une boucle à distance cible (les pétales ne se combinent pas avec elles), recherche d'un lieu
+  par son nom (`/v1/lieu`), insertion automatique de pauses ou de stations, interface PWA (étapes par glisser-déposer).
