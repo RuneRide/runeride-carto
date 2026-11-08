@@ -487,3 +487,13 @@ départ avec `retour`). Le parcours fixe alors la longueur : `distance_km` et `d
   abonné avec étapes accepté).
 - **Pas fait** : réordonner les étapes, étapes dans une boucle à distance cible (les pétales ne se combinent pas avec elles), recherche d'un lieu
   par son nom (`/v1/lieu`), insertion automatique de pauses ou de stations, interface PWA (étapes par glisser-déposer).
+
+### Tronçons publics de l'appariement (08/11/2026, J7)
+
+`POST /v1/apparier` rend aussi `troncons_publics` : les tronçons de `troncons` parcourus **ailleurs que dans les 500 premiers et derniers mètres** de la
+trace (`apparier::MARGE_PUBLIQUE_M`, spec §9 : on ne déduit pas le domicile ni les lieux habituels du début et de la fin d'un trajet). Seuls ces
+tronçons peuvent alimenter le score communautaire « motard » (côté PHP : agrégation, voir runeride#28). Un tronçon à cheval sur la limite est public s'il
+est aussi parcouru au milieu. Trace de moins de 1 000 m : liste vide.
+- **Mesuré** (graphe `rhone-alpes-j3`, trace d'une boucle de 34 km, `bootstrap --evenement`) : 171 tronçons dont 160 publics ; trace de 805 m : 8 tronçons,
+  0 public ; trace de 1 426 m : 10 tronçons, 3 publics ; les publics sont toujours inclus dans `troncons`.
+- **Pas fait** : test unitaire isolé du découpage (il passe par l'appariement complet sur le graphe).

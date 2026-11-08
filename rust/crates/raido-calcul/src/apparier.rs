@@ -32,10 +32,17 @@ const SIGMA_M: f64 = 15.0;
 
 pub type Cle = (i64, u16);
 
+/// Longueur (m) retranchée au début et à la fin de la trace pour les tronçons publics (spec §9 : 500 m).
+pub const MARGE_PUBLIQUE_M: f64 = 500.0;
+
 #[derive(Serialize, Clone, Debug)]
 pub struct Appariement {
     /// Tronçons parcourus, triés, sans doublon.
     pub troncons: Vec<Cle>,
+    /// Ceux de `troncons` parcourus ailleurs que dans les `MARGE_PUBLIQUE_M` premiers et derniers mètres de la trace : seuls candidats
+    /// au score communautaire (spec §9, le domicile et les lieux habituels ne se déduisent pas du début et de la fin d'un trajet).
+    /// Vide pour une trace de moins de `2 × MARGE_PUBLIQUE_M`.
+    pub troncons_publics: Vec<Cle>,
     /// Part (0 à 1) des points échantillonnés auxquels un tronçon a été trouvé.
     pub couverture: f64,
     pub points: usize,
@@ -123,7 +130,18 @@ pub fn apparier(g: &mut Graphe, trace: &[(f64, f64)]) -> Result<Appariement> {
 
     let mut cache: HashMap<NoeudId, Vec<ArcGeom>> = HashMap::new();
     let mut couches: Vec<Vec<Cand>> = Vec::new();
-    for &p in &pts {
+    // distance parcourue (m) au point échantillonné de chaque couche, pour écarter le début et la fin de la trace
+    let mut cumul_pts: Vec<f64> = Vec::with_capacity(pts.len());
+    let mut d_cumul = 0.0;
+    for (i, &p) in pts.iter().enumerate() {
+        if i > 0 {
+            d_cumul += haversine(pts[i - 1], p);
+        }
+        cumul_pts.push(d_cumul);
+    }
+    let longueur_trace = d_cumul;
+    let mut position_couche: Vec<f64> = Vec::new();
+    for (idx, &p) in pts.iter().enumerate() {
         let mut par_cle: HashMap<Cle, Cand> = HashMap::new();
         for (nd, _) in g.noeuds_proches(p.0, p.1, RAYON_NOEUDS_M, NB_NOEUDS) {
             let arcs = cache.entry(nd).or_insert_with(|| arcs_du_noeud(g, nd));
@@ -141,12 +159,13 @@ pub fn apparier(g: &mut Graphe, trace: &[(f64, f64)]) -> Result<Appariement> {
             v.sort_by(|a, b| a.dist.partial_cmp(&b.dist).unwrap().then(a.cle.cmp(&b.cle)));
             v.truncate(12);
             couches.push(v);
+            position_couche.push(cumul_pts[idx]);
         }
     }
     let total = pts.len();
     let apparies = couches.len();
     if apparies == 0 {
-        return Ok(Appariement { troncons: Vec::new(), couverture: 0.0, points: total, points_apparies: 0 });
+        return Ok(Appariement { troncons: Vec::new(), troncons_publics: Vec::new(), couverture: 0.0, points: total, points_apparies: 0 });
     }
 
     // Viterbi : coût = Σ émission (distance²) + transitions (tronçon identique 0, voisin 0,5, éloigné 3).
@@ -195,9 +214,24 @@ pub fn apparier(g: &mut Graphe, trace: &[(f64, f64)]) -> Result<Appariement> {
     }
     let garder_tout = chemin.len() < 4;
     let mut vus = HashSet::new();
-    let mut troncons: Vec<Cle> = chemin.into_iter().filter(|c| (garder_tout || appui[c] >= 2) && vus.insert(*c)).collect();
+    let mut vus_publics = HashSet::new();
+    let mut troncons: Vec<Cle> = Vec::new();
+    let mut troncons_publics: Vec<Cle> = Vec::new();
+    for (i, c) in chemin.iter().enumerate() {
+        if !(garder_tout || appui[c] >= 2) {
+            continue;
+        }
+        if vus.insert(*c) {
+            troncons.push(*c);
+        }
+        let au_milieu = longueur_trace >= 2.0 * MARGE_PUBLIQUE_M && position_couche[i] >= MARGE_PUBLIQUE_M && position_couche[i] <= longueur_trace - MARGE_PUBLIQUE_M;
+        if au_milieu && vus_publics.insert(*c) {
+            troncons_publics.push(*c);
+        }
+    }
     troncons.sort_unstable();
-    Ok(Appariement { troncons, couverture: apparies as f64 / total as f64, points: total, points_apparies: apparies })
+    troncons_publics.sort_unstable();
+    Ok(Appariement { troncons, troncons_publics, couverture: apparies as f64 / total as f64, points: total, points_apparies: apparies })
 }
 
 fn arcs_du_noeud(g: &Graphe, nd: NoeudId) -> Vec<ArcGeom> {
