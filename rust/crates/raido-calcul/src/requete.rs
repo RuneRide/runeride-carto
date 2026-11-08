@@ -575,6 +575,15 @@ pub fn traiter_complet(g: &mut Graphe, r: &Requete, f: &dyn FournisseurMeteo) ->
                 StationRendue { lat: s.lat, lon: s.lon, nom: s.nom.clone(), prix: s.prix, distance_m: pos.round() as u64 }
             })
             .collect();
+        // Recalculé par étapes, le parcours ne vise plus la distance demandée : on dit de combien il s'en écarte
+        if r.retour && r.etapes.is_empty() {
+            if let Ok(cible) = r.distance_cible_m() {
+                let ecart = (nouvelle.distance_m as f64 - cible) / cible;
+                if ecart.abs() > 0.15 {
+                    nouvelle.avertissements.push(format!("distance obtenue à {:+.0} % de la cible, le parcours passant par des stations", ecart * 100.0));
+                }
+            }
+        }
         // `etapes` de la réponse : seulement celles que l'utilisateur a demandées
         nouvelle.etapes = if r.etapes.is_empty() { Vec::new() } else { nouvelle.etapes.into_iter().filter(|e| r.etapes.iter().any(|q| q.lat == e.lat && q.lon == e.lon)).collect() };
         // `plan` est relancé sur le nouveau tracé au tour suivant, qui dira si un plein de plus s'impose
