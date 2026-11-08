@@ -222,7 +222,7 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                         let trace: Vec<(f64, f64)> = d.trace.iter().map(|p| (p[0], p[1])).collect();
                         let mut g = ctx.graphe.lock().unwrap_or_else(|e| e.into_inner());
                         match apparier::apparier(&mut g, &trace) {
-                            Ok(r) => reponse(200, json!({"troncons": r.troncons, "couverture": r.couverture, "points": r.points, "points_apparies": r.points_apparies, "graphe": {"version": g.index.construit_le}})),
+                            Ok(r) => reponse(200, json!({"troncons": r.troncons, "troncons_publics": r.troncons_publics, "couverture": r.couverture, "points": r.points, "points_apparies": r.points_apparies, "graphe": {"version": g.index.construit_le}})),
                             Err(e) => erreur(422, &e.to_string(), "apparier_impossible"),
                         }
                     }
