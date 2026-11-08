@@ -166,7 +166,7 @@ fn main() -> Result<()> {
                 None => Default::default(),
             };
             let t0 = Instant::now();
-            let rep = raido_calcul::requete::traiter_meteo(&mut g, &r, &f)?;
+            let rep = raido_calcul::requete::traiter_complet(&mut g, &r, &f)?;
             eprintln!("calcul : {} ms", t0.elapsed().as_millis());
             println!("{}", serde_json::to_string_pretty(&rep)?);
         }

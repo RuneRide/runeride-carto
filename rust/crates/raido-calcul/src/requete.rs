@@ -14,6 +14,7 @@ use crate::astar;
 use crate::boucle::{self, ParametresBoucle};
 use crate::charge::Graphe;
 use crate::cout::{Preferences, V_MAX_MS};
+use crate::autonomie::{self, Autonomie, Station, StationRendue};
 use crate::meteo::{self, FournisseurMeteo, PointMeteo, Seuils};
 use crate::{geo, polyligne};
 
@@ -81,6 +82,11 @@ pub struct Requete {
     /// `retour`). La distance ou la durée demandée ne sert alors plus à construire la boucle : c'est le parcours qui la fixe.
     #[serde(default)]
     pub etapes: Vec<Coord>,
+    /// Autonomie du réservoir (spec §4.6) : si la balade la dépasse, des stations de `stations` sont insérées en étapes.
+    pub autonomie: Option<Autonomie>,
+    /// Stations candidates (au plus 500), fournies par l'appelant : le moteur ne les connaît pas.
+    #[serde(default)]
+    pub stations: Vec<Station>,
     /// Heure de départ, ISO 8601 (`2026-10-26T14:00`), pour la météo à l'heure de passage.
     pub depart_a: Option<String>,
 }
@@ -110,6 +116,9 @@ pub struct Reponse {
     /// Étapes demandées, avec la distance parcourue (m) à leur passage (présent quand la requête avait des étapes).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub etapes: Vec<EtapeRendue>,
+    /// Stations insérées pour tenir l'autonomie, dans l'ordre de passage.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stations: Vec<StationRendue>,
     /// Météo à l'heure de passage, point par point (présente quand la contrainte météo a été évaluée).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub meteo: Vec<PointMeteo>,
@@ -202,6 +211,15 @@ impl Requete {
         }
         if !self.retour && self.arrivee.is_none() {
             bail!("retour (boucle) ou arrivee est obligatoire");
+        }
+        if let Some(a) = &self.autonomie {
+            a.verifier().map_err(|e| anyhow::anyhow!(e))?;
+        }
+        if self.stations.len() > autonomie::STATIONS_MAX {
+            bail!("au plus {} stations", autonomie::STATIONS_MAX);
+        }
+        if self.stations.iter().any(|s| !ok(&Coord { lat: s.lat, lon: s.lon }) || s.prix.is_some_and(|p| !p.is_finite() || p < 0.0)) {
+            bail!("stations : coordonnée ou prix invalide");
         }
         if self.etapes.len() > ETAPES_MAX {
             bail!("au plus {ETAPES_MAX} étapes");
@@ -314,6 +332,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
             variante: 0,
             passe_par: None,
             etapes: Vec::new(),
+            stations: Vec::new(),
             meteo: Vec::new(),
             avertissements,
             graphe: info(g),
@@ -359,6 +378,7 @@ fn traiter_zones(g: &mut Graphe, r: &Requete, zones: &[(f64, f64, f64)]) -> Resu
         variante: i,
         passe_par: c.passe_par.clone(),
         etapes: Vec::new(),
+        stations: Vec::new(),
         meteo: Vec::new(),
         avertissements,
         graphe: info(g),
@@ -435,6 +455,7 @@ fn traiter_etapes(g: &mut Graphe, r: &Requete, p: &mut Preferences, zones: &[(f6
         variante: 0,
         passe_par: None,
         etapes,
+        stations: Vec::new(),
         meteo: Vec::new(),
         avertissements,
         graphe: info(g),
@@ -484,6 +505,86 @@ pub fn traiter_meteo(g: &mut Graphe, r: &Requete, f: &dyn FournisseurMeteo) -> R
     let (n, mut rep) = meilleur.expect("au moins un calcul");
     if n > 0 {
         rep.avertissements.push(format!("météo non évitable : {n} point(s) de la trace dépassent les seuils"));
+    }
+    Ok(rep)
+}
+
+/// `traiter_meteo`, puis l'autonomie (spec §4.6) quand la requête en porte une : si le parcours dépasse ce que le réservoir permet,
+/// on choisit des stations parmi `stations` (`autonomie::plan`) et on recalcule en les prenant pour étapes, avec, pour garder la forme
+/// d'une boucle, ses points de passage d'origine (étapes demandées, sinon deux points aux tiers du parcours). Au plus trois essais :
+/// le parcours rallongé peut demander un plein de plus. Sans station atteignable, le parcours d'origine est rendu avec l'avertissement.
+pub fn traiter_complet(g: &mut Graphe, r: &Requete, f: &dyn FournisseurMeteo) -> Result<Reponse> {
+    let Some(a) = r.autonomie else { return traiter_meteo(g, r, f) };
+    let mut courant = r.clone();
+    let mut rep = traiter_meteo(g, r, f)?;
+    for _ in 0..3 {
+        let trace = polyligne::decoder(&rep.trace);
+        let cumul = autonomie::cumul(&trace);
+        let plan = match autonomie::plan(&trace, &cumul, &a, &r.stations) {
+            Ok(p) => p,
+            Err(msg) => {
+                rep.avertissements.push(msg);
+                return Ok(rep);
+            }
+        };
+        if plan.is_empty() {
+            rep.stations = Vec::new();
+            return Ok(rep);
+        }
+        let total = *cumul.last().unwrap_or(&0.0);
+        // points de passage (position, coordonnée) : étapes demandées (positions rendues), points d'origine d'une boucle, stations
+        let mut via: Vec<(f64, (f64, f64))> = Vec::new();
+        if r.etapes.is_empty() {
+            if r.retour {
+                for k in [1.0 / 3.0, 2.0 / 3.0] {
+                    if let Some(i) = cumul.iter().position(|&c| c >= total * k) {
+                        via.push((total * k, trace[i]));
+                    }
+                }
+            }
+        } else {
+            for (e, rendue) in r.etapes.iter().zip(rep.etapes.iter()) {
+                via.push((rendue.distance_m as f64, (e.lat, e.lon)));
+            }
+        }
+        let n_explicites = r.etapes.len();
+        for &(i, pos) in &plan {
+            via.push((pos, (r.stations[i].lat, r.stations[i].lon)));
+        }
+        via.sort_by(|x, y| x.0.total_cmp(&y.0));
+        if via.len() > ETAPES_MAX {
+            // trop de points : on garde les étapes demandées et les stations, sans les points d'origine de la boucle
+            via.retain(|v| plan.iter().any(|&(i, p)| p == v.0 && (r.stations[i].lat, r.stations[i].lon) == v.1) || n_explicites > 0);
+            if via.len() > ETAPES_MAX {
+                rep.avertissements.push(format!("autonomie : {} points de passage, plus que les {ETAPES_MAX} permis : stations non insérées", via.len()));
+                return Ok(rep);
+            }
+        }
+        courant.etapes = via.iter().map(|v| Coord { lat: v.1 .0, lon: v.1 .1 }).collect();
+        courant.autonomie = None;
+        courant.stations = Vec::new();
+        let mut nouvelle = traiter_meteo(g, &courant, f)?;
+        // les stations rendues : position le long du nouveau tracé
+        let nt = polyligne::decoder(&nouvelle.trace);
+        let nc = autonomie::cumul(&nt);
+        nouvelle.stations = plan
+            .iter()
+            .map(|&(i, _)| {
+                let s = &r.stations[i];
+                let pos = autonomie::projeter(&nt, &nc, (s.lat, s.lon)).map_or(0.0, |p| p.0);
+                StationRendue { lat: s.lat, lon: s.lon, nom: s.nom.clone(), prix: s.prix, distance_m: pos.round() as u64 }
+            })
+            .collect();
+        // `etapes` de la réponse : seulement celles que l'utilisateur a demandées
+        nouvelle.etapes = if r.etapes.is_empty() { Vec::new() } else { nouvelle.etapes.into_iter().filter(|e| r.etapes.iter().any(|q| q.lat == e.lat && q.lon == e.lon)).collect() };
+        // `plan` est relancé sur le nouveau tracé au tour suivant, qui dira si un plein de plus s'impose
+        rep = nouvelle;
+        let nc2 = autonomie::cumul(&polyligne::decoder(&rep.trace));
+        let nt2 = polyligne::decoder(&rep.trace);
+        if autonomie::plan(&nt2, &nc2, &a, &r.stations).map_or(true, |p| p.len() <= rep.stations.len()) {
+            break;
+        }
+        courant = r.clone();
     }
     Ok(rep)
 }

@@ -487,3 +487,22 @@ départ avec `retour`). Le parcours fixe alors la longueur : `distance_km` et `d
   abonné avec étapes accepté).
 - **Pas fait** : réordonner les étapes, étapes dans une boucle à distance cible (les pétales ne se combinent pas avec elles), recherche d'un lieu
   par son nom (`/v1/lieu`), insertion automatique de pauses ou de stations, interface PWA (étapes par glisser-déposer).
+
+
+### Autonomie et stations (08/11/2026)
+
+`POST /v1/balade` et `/v1/trajet` acceptent `autonomie` {`km` (30 à 1 000, réservoir plein), `reservoir` (0,05 à 1, défaut 1)} et `stations`
+(au plus 500 : `{lat, lon, nom?, prix?}`). **Le moteur ne connaît pas les stations** (elles sont dans la base du PHP, `osm_stations` et
+`fuel_stations`) : l'appelant les envoie, la PWA les lira côté PHP (non fait).
+- **Calcul** (`requete::traiter_complet`, `autonomie.rs`) : le parcours normal est calculé ; s'il dépasse 90 % de ce que permet le réservoir, on
+  choisit des stations à moins de 3 km du tracé et atteignables : celles de la seconde moitié de la portée d'abord, la **moins chère** (prix connu avant
+  prix inconnu), sinon la plus lointaine atteignable ; après le plein, portée = réservoir plein. Au plus 4 pleins. Les stations deviennent des
+  **étapes**, avec les points de passage d'origine de la boucle (ses étapes demandées, sinon deux points aux tiers) pour garder sa forme ; au plus trois
+  essais, car le parcours rallongé peut demander un plein de plus.
+- **Réponse** : `stations` [{lat, lon, nom, prix, distance_m au passage}] dans l'ordre de passage. Sans station atteignable : la balade d'origine et
+  l'avertissement « autonomie insuffisante : aucune station à moins de 3 km du tracé avant le km N ». Trop de points de passage (> 8) : avertissement.
+- **Mesuré** (graphe `rhone-alpes-j3`, boucle de 120 km depuis Annecy, réservoir 100 km, stations fictives tous les 15 km à 170 m du tracé, prix
+  tirés au hasard) : parcours de base 126,1 km, avec autonomie 121,7 km, un plein à 64 km (la moins chère de la fenêtre 45 à 90 km), tracé qui passe à
+  moins de 150 m de la station, 80 % de cellules de 200 m communes avec la boucle d'origine, 0,52 s. Sans stations : l'avertissement.
+- **Pas fait** : lecture des stations par la PWA (route PHP de stations proches d'un tracé), case « autonomie » dans le formulaire, consommation
+  réelle selon la vitesse ou le dénivelé, horaires d'ouverture, stations hors de la zone du graphe.
