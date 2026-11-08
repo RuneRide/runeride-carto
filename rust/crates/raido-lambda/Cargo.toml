@@ -28,6 +28,8 @@ tokio = { version = "1", default-features = false, features = ["rt", "macros"] }
 # Vérification du jeton court RS256 (JWKS du PHP) : RSA et SHA-256 en Rust pur
 rsa = { version = "0.9", default-features = false, features = ["std", "sha2"] }
 sha2 = "0.10"
+# Client HTTP déjà utilisé par rw-aws (même version) : appel de RuneRide Météo
+ureq = { version = "3", default-features = false }
 
 [dev-dependencies]
 rand = "0.8"

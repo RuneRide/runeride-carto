@@ -487,3 +487,17 @@ départ avec `retour`). Le parcours fixe alors la longueur : `distance_km` et `d
   abonné avec étapes accepté).
 - **Pas fait** : réordonner les étapes, étapes dans une boucle à distance cible (les pétales ne se combinent pas avec elles), recherche d'un lieu
   par son nom (`/v1/lieu`), insertion automatique de pauses ou de stations, interface PWA (étapes par glisser-déposer).
+
+### Fournisseur météo HTTP (08/11/2026)
+
+`RAIDO_METEO_URL` (adresse de RuneRide Météo, sans barre finale ; absente ou vide : inchangé, « météo indisponible ») branche la contrainte météo (J5) sur
+`POST {url}/v1/route` (`raido-lambda/src/meteo_http.rs`, `FournisseurHttp`). Délais : 2 s de connexion, 5 s de réponse, 6 s au total ; au-delà, ou
+sur toute erreur (HTTP ≠ 200, JSON illisible, nombre de points différent), la balade est rendue avec « météo indisponible ».
+- **Contrat provisoire** (la route n'existe pas, jalon J6 de runeride-weather) : corps `{trace: polyligne encodée, vitesse_kmh, depart?: ISO}` avec
+  l'en-tête `x-amz-content-sha256` (CloudFront, OAC) ; réponse `{points: [{pluie_mmh, rafales_kmh, froid_c}, …]}`, un par point envoyé, dans l'ordre.
+  Les noms viennent de moi, pas de la spec météo (qui ne dit que « T, pluie, vent, rafales, froid ressenti ») : à corriger dans cette seule fonction.
+- **Vérifié** : 2 tests unitaires contre un faux serveur HTTP local (corps, condensé SHA-256, points ; 503, JSON illisible, nombre de points, pas de serveur) ;
+  de bout en bout avec le **vrai binaire `bootstrap`** (mode `--evenement`) contre un faux serveur météo : Annecy 50 km, pluie simulée de 4 mm/h sur
+  2,5 km au tiers du tracé, la base la traversait (278 points), le tracé rendu l'évite (0 point), 53 points de météo dans la réponse, sans avertissement.
+- **Pas vérifié** : TLS vers le vrai domaine, latence réelle, arm64, la route réelle. Le module Terraform doit encore transmettre `RAIDO_METEO_URL`
+  (variable à ajouter dans `runeride-cloud`) ; rien n'est appliqué.
