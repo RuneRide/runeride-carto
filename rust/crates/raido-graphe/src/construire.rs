@@ -14,7 +14,7 @@ use raido_format::{
 
 use crate::osm::Extrait;
 use crate::relief::Mnt;
-use crate::scores::{self, Agglomerations, PoidsScenique, Scenique};
+use crate::scores::{self, Agglomerations, PoidsScenique, Scenique, ScoreMotard};
 
 /// Arc avant attribution de son indice définitif dans sa tuile.
 struct ArcBrut {
@@ -44,6 +44,8 @@ pub struct Statistiques {
     pub somme_scenique: f64,
     /// Arcs pour lesquels le relief a pu être évalué (tuiles du MNT présentes).
     pub arcs_avec_relief: usize,
+    /// Arcs dont le score motard est positif (un par sens), si un fichier communautaire a été lu.
+    pub arcs_motard: usize,
 }
 
 /// Construit le graphe et l'écrit dans `sortie/` ; `bornes` (sud, ouest, nord, est) limite l'emprise.
@@ -58,6 +60,11 @@ pub fn construire_avec(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, so
 
 /// Comme `construire_avec`, avec un modèle numérique de terrain : montée de chaque arc et terme de relief du score scénique.
 pub fn construire_relief(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str, poids: PoidsScenique, mnt: Option<&Mnt>) -> Result<Statistiques> {
+    construire_complet(ex, sortie, bornes, source, poids, mnt, None)
+}
+
+/// Comme `construire_relief`, avec le score communautaire « motard » (comptages par tronçon agrégés côté PHP).
+pub fn construire_complet(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, source: &str, poids: PoidsScenique, mnt: Option<&Mnt>, motard: Option<&ScoreMotard>) -> Result<Statistiques> {
     let mut st = Statistiques { voies: ex.voies.len(), restrictions_lues: ex.restrictions.len(), ..Default::default() };
     let dans_bornes = |lat: f64, lon: f64| bornes.is_none_or(|b| lat >= b[0] && lat <= b[2] && lon >= b[1] && lon <= b[3]);
 
@@ -145,6 +152,9 @@ pub fn construire_relief(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, 
             if scen > 0.0 {
                 st.arcs_scenique_positifs += 1;
             }
+            if motard.is_some_and(|m| m.score(v.id, segment) > 0.0) {
+                st.arcs_motard += (v.sens >= 0) as usize + (v.sens <= 0) as usize;
+            }
             st.somme_scenique += scen;
             let rond_point = v.drapeaux & drapeau::ROND_POINT != 0;
             let temps = scores::temps_ds(longueur, v.classe, v.vitesse_kmh, sin, rond_point);
@@ -156,7 +166,7 @@ pub fn construire_relief(ex: &Extrait, sortie: &Path, bornes: Option<[f64; 4]>, 
                 temps_ds: temps,
                 classe: v.classe as u8,
                 drapeaux: v.drapeaux,
-                scores: [scores::en_u8(sin), scores::en_u8(scen), 0, scores::en_u8(agglo)],
+                scores: [scores::en_u8(sin), scores::en_u8(scen), motard.map_or(0, |m| scores::en_u8(m.score(v.id, segment))), scores::en_u8(agglo)],
                 montee_m: 0,
                 way_id: v.id,
                 segment,

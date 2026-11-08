@@ -247,6 +247,47 @@ impl Scenique {
     }
 }
 
+/// Score communautaire « motard » (spec §9, J7) : comptages par tronçon `[way, segment, nombre de comptes]` écrits par
+/// `bin/agreger-motard` côté PHP (seuil de 5 comptes distincts déjà appliqué là-bas). Note de 0 à 1 : `ln(n) / ln(n95)`, où `n95` est le
+/// 95ᵉ centile des comptages (au moins 10) ; un tronçon absent du fichier a 0. **Formule provisoire**, comme les poids du scénique.
+pub struct ScoreMotard {
+    comptes: HashMap<(i64, u16), u32>,
+    n_ref: f64,
+}
+
+impl ScoreMotard {
+    pub fn depuis_json(texte: &str) -> anyhow::Result<ScoreMotard> {
+        #[derive(Deserialize)]
+        struct Fichier {
+            troncons: Vec<(i64, u16, u32)>,
+        }
+        let f: Fichier = serde_json::from_str(texte).map_err(|e| anyhow::anyhow!("fichier du score motard : {e}"))?;
+        Ok(ScoreMotard::nouveau(f.troncons))
+    }
+
+    pub fn nouveau(troncons: Vec<(i64, u16, u32)>) -> ScoreMotard {
+        let mut n: Vec<u32> = troncons.iter().map(|t| t.2).collect();
+        n.sort_unstable();
+        let p95 = n.get(((n.len() as f64) * 0.95) as usize).or(n.last()).copied().unwrap_or(10);
+        ScoreMotard { comptes: troncons.into_iter().map(|(w, s, c)| ((w, s), c)).collect(), n_ref: (p95.max(10)) as f64 }
+    }
+
+    pub fn len(&self) -> usize {
+        self.comptes.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.comptes.is_empty()
+    }
+
+    pub fn score(&self, way: i64, segment: u16) -> f64 {
+        match self.comptes.get(&(way, segment)) {
+            Some(&n) if n >= 1 => ((n as f64).ln() / self.n_ref.ln()).clamp(0.0, 1.0),
+            _ => 0.0,
+        }
+    }
+}
+
 pub fn en_u8(score: f64) -> u8 {
     (score.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -290,6 +331,19 @@ mod tests {
         let p: PoidsScenique = serde_json::from_str(r#"{"col": 1.0, "rayon_m": 200}"#).unwrap();
         assert_eq!((p.col, p.rayon_m, p.panorama), (1.0, 200.0, PoidsScenique::default().panorama), "champs absents : défauts");
         assert!(serde_json::from_str::<PoidsScenique>(r#"{"colle": 1.0}"#).is_err(), "faute de frappe refusée");
+    }
+
+    #[test]
+    fn score_motard_logarithmique_borne_et_nul_hors_fichier() {
+        let m = ScoreMotard::depuis_json(r#"{"graphe":"v","seuil":5,"troncons":[[1,0,5],[1,1,10],[2,0,40],[3,0,400]]}"#).unwrap();
+        assert_eq!(m.len(), 4);
+        assert_eq!(m.score(9, 9), 0.0, "tronçon absent du fichier");
+        assert!(m.score(1, 0) > 0.0 && m.score(1, 0) < m.score(1, 1) && m.score(1, 1) < m.score(2, 0), "croissant avec le nombre de comptes");
+        assert!((m.score(3, 0) - 1.0).abs() < 1e-9, "borné à 1 au-delà du 95ᵉ centile");
+        let petit = ScoreMotard::nouveau(vec![(1, 0, 5), (1, 1, 6)]);
+        assert!(petit.score(1, 0) < 0.8, "n95 d'au moins 10 : 5 comptes n'atteignent jamais la note maximale");
+        assert!(ScoreMotard::depuis_json("pas du json").is_err());
+        assert!(ScoreMotard::nouveau(vec![]).is_empty());
     }
 
     #[test]

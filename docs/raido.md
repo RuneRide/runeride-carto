@@ -487,3 +487,19 @@ départ avec `retour`). Le parcours fixe alors la longueur : `distance_km` et `d
   abonné avec étapes accepté).
 - **Pas fait** : réordonner les étapes, étapes dans une boucle à distance cible (les pétales ne se combinent pas avec elles), recherche d'un lieu
   par son nom (`/v1/lieu`), insertion automatique de pauses ou de stations, interface PWA (étapes par glisser-déposer).
+
+### Score communautaire « motard » dans le graphe (08/11/2026, J7)
+
+`raido-graphe construire … --motard motard.json` lit le fichier de l'agrégation hebdomadaire du PHP (`php bin/agreger-motard`, runeride#28 :
+`{graphe, seuil, troncons: [[way, segment, nombre de comptes], …]}`, déjà filtré à 5 comptes distincts par tronçon) et renseigne `scores[MOTARD]` de chaque
+arc (un par sens) : `ln(n) / ln(n95)`, `n95` = 95ᵉ centile des comptages et au moins 10, borné à 1 ; 0 pour un tronçon absent. Le moteur le lisait déjà
+(`poids(motard) × (1 − score)` dans le coût) : le curseur « motard » de la PWA devient actif dès qu'un graphe est construit avec ce fichier.
+- **Formule provisoire**, comme celles du scénique, à calibrer ; les identifiants `(way, segment)` viennent de la version de graphe de l'agrégation : sur un
+  graphe reconstruit d'un autre extrait OSM, des tronçons peuvent ne plus exister ou avoir changé de numéro (le fichier porte `graphe` pour le vérifier ;
+  le constructeur ne le compare pas).
+- **Mesuré** (essai sur données **synthétiques** : une boucle de 60 km depuis Annecy, 20 comptes fictifs sur chacun de ses 207 tronçons ; 383 arcs notés) : avec
+  `motard = 4`, la boucle de 60 km depuis le même départ suit la route communautaire sur 100 % de son tracé (28 % sans le curseur), score motard 0,93 contre 0,21 ;
+  depuis un départ à 3 km, la boucle ne la rejoint pas (0 %) : le score pèse sur le coût des arcs, il ne dirige pas la construction de la boucle vers
+  les routes populaires.
+- **Pas fait** : prise en compte du score dans le choix des pétales ou des attracteurs, comparaison de version à la lecture, vraies données (aucune : pas de
+  contributeurs, et le seuil de 5 comptes distincts par tronçon ne sera atteint qu'avec une base d'utilisateurs).
