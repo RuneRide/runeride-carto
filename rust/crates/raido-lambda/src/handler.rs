@@ -26,6 +26,15 @@ pub struct Contexte {
     pub verificateur: Option<Verificateur>,
     /// Clé de service de `POST /v1/apparier` (`RAIDO_CLE_SERVICE`) ; absente : la route n'existe pas.
     pub cle_service: Option<String>,
+    /// RuneRide Météo (`RAIDO_METEO_URL`) ; absent : la contrainte météo rend « météo indisponible ».
+    pub meteo: Option<crate::meteo_http::FournisseurHttp>,
+}
+
+fn fournisseur_meteo(ctx: &Contexte) -> &dyn raido_calcul::meteo::FournisseurMeteo {
+    match &ctx.meteo {
+        Some(m) => m,
+        None => &raido_calcul::meteo::FournisseurAbsent,
+    }
 }
 
 /// Journal JSON sur la sortie d'erreur (CloudWatch Logs la capture comme la sortie standard), une ligne
@@ -42,7 +51,8 @@ impl Contexte {
     /// (`graphe/courant`), `RAIDO_CACHE` (`/tmp/raido`, vide pour désactiver), `RAIDO_S3_ENDPOINT` (tests),
     /// `RAIDO_THREADS`, `AWS_REGION` ; jeton : `RAIDO_JETON` (`obligatoire`, défaut, ou `desactive`),
     /// `RAIDO_JWKS_URL` (défaut `https://app.runeride.fr/.well-known/jwks.json`) ou `RAIDO_JWKS_FICHIER`,
-    /// `RAIDO_EMETTEUR` (`https://app.runeride.fr`), `RAIDO_AUDIENCE` (`raido`) ; `RAIDO_CLE_SERVICE` (clé de `/v1/apparier`).
+    /// `RAIDO_EMETTEUR` (`https://app.runeride.fr`), `RAIDO_AUDIENCE` (`raido`) ; `RAIDO_CLE_SERVICE` (clé de `/v1/apparier`) ;
+    /// `RAIDO_METEO_URL` (RuneRide Météo, sans barre finale : active la contrainte météo).
     pub fn depuis_env() -> Result<Contexte> {
         let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
         let verificateur = if var("RAIDO_JETON").as_deref() == Some("desactive") {
@@ -84,7 +94,7 @@ impl Contexte {
         let source_nom = source.nom();
         let graphe = Graphe::depuis_source(source).context("ouverture du graphe")?;
         journal("INFO", json!({"evenement": "demarrage", "source": source_nom, "graphe": graphe.index.construit_le, "tuiles": graphe.index.tuiles.len()}));
-        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION"), verificateur, cle_service: var("RAIDO_CLE_SERVICE") })
+        Ok(Contexte { graphe: Mutex::new(graphe), source_nom, version_binaire: env!("CARGO_PKG_VERSION"), verificateur, cle_service: var("RAIDO_CLE_SERVICE"), meteo: var("RAIDO_METEO_URL").filter(|u| !u.is_empty()).map(|u| crate::meteo_http::FournisseurHttp::nouveau(&u)) })
     }
 }
 
@@ -197,7 +207,7 @@ pub fn traiter_http(ctx: &Contexte, evt: &Value) -> Value {
                         }
                     }
                     let mut g = ctx.graphe.lock().unwrap_or_else(|e| e.into_inner());
-                    match requete::traiter_meteo(&mut g, &r, &raido_calcul::meteo::FournisseurAbsent) {
+                    match requete::traiter_meteo(&mut g, &r, fournisseur_meteo(ctx)) {
                         Ok(rep) => reponse(200, serde_json::to_value(&rep).unwrap_or(Value::Null)),
                         Err(e) if requete::est_erreur_requete(&e) => erreur(422, &e.to_string(), "calcul_impossible"),
                         Err(e) => {

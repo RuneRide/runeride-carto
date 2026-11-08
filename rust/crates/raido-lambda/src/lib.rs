@@ -5,4 +5,5 @@
 
 pub mod handler;
 pub mod jeton;
+pub mod meteo_http;
 pub mod s3;
