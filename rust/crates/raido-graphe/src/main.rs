@@ -33,12 +33,15 @@ enum Commande {
         /// Dossier de tuiles de relief `N45E005.i16` (voir `rust/tools/convertir-mnt.py`) : montée de chaque arc et terme de relief du score scénique.
         #[arg(long)]
         relief: Option<PathBuf>,
+        /// Fichier du score communautaire « motard » (`php bin/agreger-motard`, JSON `{troncons: [[way, segment, nombre], …]}`) : note chaque tronçon parcouru.
+        #[arg(long)]
+        motard: Option<PathBuf>,
     },
 }
 
 fn main() -> Result<()> {
     match Cli::parse().commande {
-        Commande::Construire { pbf, sortie, bornes, poids, dump_poi, relief } => {
+        Commande::Construire { pbf, sortie, bornes, poids, dump_poi, relief, motard } => {
             let bornes = match bornes {
                 Some(b) => {
                     let v: Vec<f64> = b.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -88,7 +91,15 @@ fn main() -> Result<()> {
                 }
                 None => None,
             };
-            let st = raido_graphe::construire::construire_relief(&ex, &sortie, bornes, &source, poids, mnt.as_ref())?;
+            let score_motard = match &motard {
+                Some(f) => {
+                    let m = raido_graphe::scores::ScoreMotard::depuis_json(&std::fs::read_to_string(f)?)?;
+                    eprintln!("motard : {} tronçons communautaires lus dans {}", m.len(), f.display());
+                    Some(m)
+                }
+                None => None,
+            };
+            let st = raido_graphe::construire::construire_complet(&ex, &sortie, bornes, &source, poids, mnt.as_ref(), score_motard.as_ref())?;
             eprintln!(
                 "graphe : {} intersections, {} arcs, {} tuiles, {:.1} Mo, restrictions {}/{} résolues, {} nœuds sans coordonnées, {} composantes ({} nœuds hors principale), en {:.1} s",
                 st.intersections,
@@ -104,6 +115,9 @@ fn main() -> Result<()> {
             );
             if mnt.is_some() {
                 eprintln!("relief : évalué sur {:.1} % des arcs", 100.0 * st.arcs_avec_relief as f64 / st.arcs.max(1) as f64);
+            }
+            if score_motard.is_some() {
+                eprintln!("motard : {} arcs avec un score positif ({:.2} % des arcs)", st.arcs_motard, 100.0 * st.arcs_motard as f64 / st.arcs.max(1) as f64);
             }
             eprintln!("attracteurs : {} cols et panoramas nommés dans attracteurs.json", st.attracteurs);
             eprintln!(
