@@ -8,6 +8,7 @@
 
 pub mod apparier;
 pub mod astar;
+pub mod autonomie;
 pub mod boucle;
 pub mod charge;
 pub mod cout;
